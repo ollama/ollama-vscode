@@ -1,0 +1,70 @@
+{
+  "name": "ollama-vscode",
+  "displayName": "Ollama",
+  "description": "Ollama language model provider for VS Code.",
+  "publisher": "ollama",
+  "version": "0.0.1",
+  "private": true,
+  "engines": {
+    "vscode": "^1.120.0"
+  },
+  "categories": [
+    "AI",
+    "Machine Learning",
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguageModelChatProvider:ollama-dev"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "ollama-dev",
+        "displayName": "Ollama",
+        "configuration": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "title": "Ollama URL",
+              "default": "http://127.0.0.1:11434",
+              "description": "Base URL for the Ollama server."
+            },
+            "models": {
+              "type": "array",
+              "title": "Models",
+              "description": "Optional model names to expose from this Ollama server. When omitted, all /api/tags models are exposed.",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "ollama.refreshModels",
+        "title": "Ollama: Refresh Models"
+      },
+      {
+        "command": "ollama.testPrompt",
+        "title": "Ollama: Test Prompt"
+      },
+      {
+        "command": "ollama.diagnoseModels",
+        "title": "Ollama: Diagnose Models"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.120.0",
+    "typescript": "^5.8.0"
+  }
+}
