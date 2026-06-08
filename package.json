@@ -4,7 +4,12 @@
   "description": "Ollama language model provider for VS Code.",
   "publisher": "ollama",
   "version": "0.0.1",
+  "license": "MIT",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ollama/ollama-vscode.git"
+  },
   "engines": {
     "vscode": "^1.120.0"
   },
@@ -14,13 +19,14 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguageModelChatProvider:ollama-dev"
+    "onStartupFinished",
+    "onLanguageModelChatProvider:ollama"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "languageModelChatProviders": [
       {
-        "vendor": "ollama-dev",
+        "vendor": "ollama",
         "displayName": "Ollama",
         "configuration": {
           "type": "object",
@@ -38,6 +44,35 @@
               "items": {
                 "type": "string"
               }
+            },
+            "headers": {
+              "type": "object",
+              "title": "Headers",
+              "default": {},
+              "description": "Additional HTTP headers to include with Ollama model discovery and chat requests.",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "configuration": [
+      {
+        "title": "Ollama",
+        "properties": {
+          "ollama.endpoint": {
+            "type": "string",
+            "default": "http://127.0.0.1:11434",
+            "description": "Base URL for the Ollama server. Provider configuration from VS Code takes precedence when present."
+          },
+          "ollama.headers": {
+            "type": "object",
+            "default": {},
+            "description": "Additional HTTP headers to include with Ollama model discovery and chat requests.",
+            "additionalProperties": {
+              "type": "string"
             }
           }
         }
@@ -60,6 +95,7 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
+    "vscode:prepublish": "npm run compile",
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {

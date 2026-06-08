@@ -5,6 +5,10 @@ export interface OllamaShowResponse {
   model_info?: Record<string, unknown>;
 }
 
+export interface OllamaVersionResponse {
+  version: string;
+}
+
 export interface OllamaChatMessage {
   role: string;
   content: string;
@@ -46,11 +50,42 @@ export interface OllamaChatResponse {
   done?: boolean;
 }
 
+interface OllamaErrorResponse {
+  error?: string;
+  signin_url?: string;
+}
+
+export class OllamaAPIError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly endpoint: string,
+    readonly responseError?: string,
+    readonly signinURL?: string
+  ) {
+    super(message);
+  }
+}
+
 export class OllamaClient {
-  constructor(private readonly baseURL: string) {}
+  constructor(
+    private readonly baseURL: string,
+    private readonly headers: Record<string, string> = {}
+  ) {}
+
+  async version(token: vscode.CancellationToken): Promise<OllamaVersionResponse> {
+    const response = await fetch(this.url('/api/version'), {
+      headers: this.headers,
+      signal: abortSignal(token)
+    });
+    await throwIfNotOK(response, '/api/version');
+
+    return response.json() as Promise<OllamaVersionResponse>;
+  }
 
   async listModels(token: vscode.CancellationToken): Promise<string[]> {
     const response = await fetch(this.url('/api/tags'), {
+      headers: this.headers,
       signal: abortSignal(token)
     });
     await throwIfNotOK(response, '/api/tags');
@@ -62,7 +97,7 @@ export class OllamaClient {
   async show(model: string, token: vscode.CancellationToken): Promise<OllamaShowResponse> {
     const response = await fetch(this.url('/api/show'), {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: this.jsonHeaders(),
       body: JSON.stringify({ model }),
       signal: abortSignal(token)
     });
@@ -74,7 +109,7 @@ export class OllamaClient {
   async *chat(request: OllamaChatRequest, token: vscode.CancellationToken): AsyncIterable<OllamaChatResponse> {
     const response = await fetch(this.url('/api/chat'), {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: this.jsonHeaders(),
       body: JSON.stringify(request),
       signal: abortSignal(token)
     });
@@ -119,6 +154,13 @@ export class OllamaClient {
   private url(path: string): string {
     return `${this.baseURL.replace(/\/+$/, '')}${path}`;
   }
+
+  private jsonHeaders(): Record<string, string> {
+    return {
+      ...this.headers,
+      'content-type': 'application/json'
+    };
+  }
 }
 
 function abortSignal(token: vscode.CancellationToken): AbortSignal {
@@ -133,5 +175,25 @@ async function throwIfNotOK(response: Response, endpoint: string) {
   }
 
   const body = await response.text().catch(() => '');
-  throw new Error(`Ollama ${endpoint} failed with HTTP ${response.status}${body ? `: ${body}` : ''}`);
+  const parsed = parseErrorBody(body);
+  const detail = parsed?.error ?? body;
+  throw new OllamaAPIError(
+    `Ollama ${endpoint} failed with HTTP ${response.status}${detail ? `: ${detail}` : ''}`,
+    response.status,
+    endpoint,
+    parsed?.error,
+    parsed?.signin_url
+  );
+}
+
+function parseErrorBody(body: string): OllamaErrorResponse | undefined {
+  if (!body) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(body) as OllamaErrorResponse;
+    return typeof parsed === 'object' && parsed !== null ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }

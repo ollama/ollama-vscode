@@ -3,7 +3,7 @@ import { OllamaClient } from './ollamaClient';
 import { OllamaLanguageModelProvider } from './provider';
 
 const defaultOllamaURL = 'http://127.0.0.1:11434';
-const ollamaVendor = 'ollama-dev';
+const ollamaVendor = 'ollama';
 
 export function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel('Ollama');
@@ -102,16 +102,29 @@ async function diagnoseModels(output: vscode.OutputChannel) {
 }
 
 async function listDirectOllamaModels(output: vscode.OutputChannel): Promise<string[]> {
-  const client = new OllamaClient(defaultOllamaURL);
+  const settings = vscode.workspace.getConfiguration('ollama');
+  const endpoint = settings.get<string>('endpoint', defaultOllamaURL) || defaultOllamaURL;
+  const client = new OllamaClient(endpoint, getConfiguredHeaders(settings));
   const source = new vscode.CancellationTokenSource();
   const timer = setTimeout(() => source.cancel(), 5000);
   try {
     return await client.listModels(source.token);
   } catch (error) {
-    output.appendLine(`Direct Ollama API failed at ${defaultOllamaURL}: ${error instanceof Error ? error.message : String(error)}`);
+    output.appendLine(`Direct Ollama API failed at ${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
     return [];
   } finally {
     clearTimeout(timer);
     source.dispose();
   }
+}
+
+function getConfiguredHeaders(settings: vscode.WorkspaceConfiguration): Record<string, string> {
+  const configured = settings.get<Record<string, unknown>>('headers', {});
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(configured)) {
+    if (typeof value === 'string') {
+      headers[name] = value;
+    }
+  }
+  return headers;
 }
