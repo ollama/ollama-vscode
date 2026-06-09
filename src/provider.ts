@@ -15,19 +15,30 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
   headers: Record<string, string>;
 }
 
+interface CachedModelDetails {
+  show: OllamaShowResponse;
+  expiresAt: number;
+}
+
 const defaultOllamaURL = 'http://127.0.0.1:11434';
 const defaultMaxInputTokens = 8192;
 const defaultMaxOutputTokens = 4096;
 const minimumOllamaVersion = '0.6.4';
+const modelDetailsConcurrency = 6;
+const modelDetailsCacheTTL = 5 * 60 * 1000;
 
 export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProvider<OllamaLanguageModel>, vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
+  private readonly modelDetailsCache = new Map<string, CachedModelDetails>();
+  private readonly pendingModelDetails = new Set<string>();
   readonly onDidChangeLanguageModelChatInformation = this.changeEmitter.event;
 
   constructor(private readonly output?: vscode.OutputChannel) {}
 
   refresh() {
     this.output?.appendLine('Refreshing Ollama language models.');
+    this.modelDetailsCache.clear();
+    this.pendingModelDetails.clear();
     this.changeEmitter.fire();
   }
 
@@ -59,29 +70,8 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     }
     this.output?.appendLine(`Providing ${names.length} Ollama model(s) from ${configuration.url} with Ollama ${version}.`);
 
-    return Promise.all(names.map(async name => {
-      const show = await client.show(name, token).catch(error => {
-        this.output?.appendLine(`Could not read model details for ${name}: ${formatError(error)}`);
-        return undefined;
-      });
-      const capabilities = show?.capabilities ?? [];
-
-      return {
-        id: name,
-        name,
-        family: modelFamily(name),
-        version: '1.0',
-        maxInputTokens: contextLength(show) ?? defaultMaxInputTokens,
-        maxOutputTokens: defaultMaxOutputTokens,
-        capabilities: {
-          toolCalling: capabilities.includes('tools'),
-          imageInput: capabilities.includes('vision')
-        },
-        model: name,
-        url: configuration.url,
-        headers: configuration.headers
-      };
-    }));
+    void this.refreshModelDetails(client, configuration, names);
+    return names.map(name => this.toLanguageModel(name, configuration, this.getCachedModelDetails(configuration, name)));
   }
 
   async provideLanguageModelChatResponse(
@@ -160,6 +150,116 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     }
     return error instanceof Error ? error : new Error(String(error));
   }
+
+  private toLanguageModel(
+    name: string,
+    configuration: OllamaProviderConfiguration,
+    show: OllamaShowResponse | undefined
+  ): OllamaLanguageModel {
+    const capabilities = show?.capabilities ?? [];
+
+    return {
+      id: name,
+      name,
+      family: modelFamily(name),
+      version: '1.0',
+      maxInputTokens: contextLength(show) ?? defaultMaxInputTokens,
+      maxOutputTokens: defaultMaxOutputTokens,
+      capabilities: {
+        toolCalling: capabilities.includes('tools'),
+        imageInput: capabilities.includes('vision')
+      },
+      model: name,
+      url: configuration.url,
+      headers: configuration.headers
+    };
+  }
+
+  private getCachedModelDetails(
+    configuration: OllamaProviderConfiguration,
+    model: string
+  ): OllamaShowResponse | undefined {
+    const key = modelDetailsCacheKey(configuration, model);
+    const cached = this.modelDetailsCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.show;
+    }
+    return undefined;
+  }
+
+  private async refreshModelDetails(
+    client: OllamaClient,
+    configuration: OllamaProviderConfiguration,
+    names: readonly string[]
+  ): Promise<void> {
+    const missing = names
+      .map(name => ({ name, key: modelDetailsCacheKey(configuration, name) }))
+      .filter(({ name, key }) =>
+        !this.pendingModelDetails.has(key) &&
+        this.getCachedModelDetails(configuration, name) === undefined
+      );
+
+    if (missing.length === 0) {
+      return;
+    }
+
+    for (const { key } of missing) {
+      this.pendingModelDetails.add(key);
+    }
+
+    this.output?.appendLine(`Reading details for ${missing.length} Ollama model(s) in the background.`);
+    const source = new vscode.CancellationTokenSource();
+    let updated = false;
+
+    try {
+      await mapWithConcurrency(missing, modelDetailsConcurrency, async ({ name, key }) => {
+        try {
+          const show = await client.show(name, source.token);
+          this.modelDetailsCache.set(key, {
+            show,
+            expiresAt: Date.now() + modelDetailsCacheTTL
+          });
+          updated = true;
+        } catch (error) {
+          this.output?.appendLine(`Could not read model details for ${name}: ${formatError(error)}`);
+        } finally {
+          this.pendingModelDetails.delete(key);
+        }
+      });
+    } finally {
+      for (const { key } of missing) {
+        this.pendingModelDetails.delete(key);
+      }
+      source.dispose();
+    }
+
+    if (updated) {
+      this.changeEmitter.fire();
+    }
+  }
+}
+
+async function mapWithConcurrency<T, U>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T) => Promise<U>
+): Promise<U[]> {
+  const results = new Array<U>(items.length);
+  let index = 0;
+
+  async function worker() {
+    for (;;) {
+      const current = index++;
+      if (current >= items.length) {
+        return;
+      }
+      results[current] = await fn(items[current]);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, worker);
+  await Promise.all(workers);
+  return results;
 }
 
 function getConfiguration(options?: vscode.PrepareLanguageModelChatModelOptions): OllamaProviderConfiguration {
@@ -176,6 +276,14 @@ function getConfiguration(options?: vscode.PrepareLanguageModelChatModelOptions)
       : [],
     headers: getConfiguredHeaders(configuration, settings)
   };
+}
+
+function modelDetailsCacheKey(configuration: OllamaProviderConfiguration, model: string): string {
+  return JSON.stringify({
+    url: configuration.url,
+    model,
+    headers: Object.entries(configuration.headers).sort(([a], [b]) => a.localeCompare(b))
+  });
 }
 
 function getConfiguredHeaders(

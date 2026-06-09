@@ -5,7 +5,6 @@
   "publisher": "ollama",
   "version": "0.0.1",
   "license": "MIT",
-  "private": true,
   "repository": {
     "type": "git",
     "url": "https://github.com/ollama/ollama-vscode.git"
@@ -82,10 +81,6 @@
       {
         "command": "ollama.refreshModels",
         "title": "Ollama: Refresh Models"
-      },
-      {
-        "command": "ollama.testPrompt",
-        "title": "Ollama: Test Prompt"
       },
       {
         "command": "ollama.diagnoseModels",

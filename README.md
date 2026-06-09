@@ -1,59 +1,61 @@
 # Ollama for VS Code
 
-This extension contributes Ollama models to VS Code/Copilot Chat as a language
-model provider.
+Use Ollama models in Visual Studio Code Chat.
 
-It discovers models from a running Ollama server and streams chat responses
-through Ollama's native `/api/chat` endpoint.
+The Ollama extension adds models from your running Ollama server to the VS Code
+model picker, so you can use local and cloud Ollama models directly in the
+editor.
 
-## How it works
+## Why use it
 
-1. VS Code sees the `languageModelChatProviders` contribution in `package.json`.
-2. VS Code activates the extension on `onLanguageModelChatProvider:ollama`.
-3. The extension calls `vscode.lm.registerLanguageModelChatProvider("ollama", provider)`.
-4. VS Code calls `provideLanguageModelChatInformation` to discover models.
-5. When the user sends a chat request, VS Code calls `provideLanguageModelChatResponse`.
-6. The provider converts VS Code messages/tools/images to Ollama `/api/chat`
-   requests and streams `LanguageModelTextPart` / `LanguageModelToolCallPart`
-   responses back to VS Code.
+- Use local models in VS Code without sending prompts to a hosted model provider.
+- Use Ollama cloud models from the same model picker when you want larger hosted
+  models or longer context windows.
+- Keep using the VS Code Chat experience while choosing the Ollama model that
+  fits the task.
 
-## Installation
+## Requirements
 
-There are two supported installation paths.
+- Visual Studio Code 1.120 or newer.
+- Ollama installed and running.
+- At least one Ollama model available locally or from Ollama cloud.
 
-### Install from the Marketplace
-
-After this extension is published, install it from the VS Code Marketplace by
-searching for `Ollama` in the Extensions view.
-
-### Install manually from a VSIX
-
-For local testing or manual installation before Marketplace publishing, install
-a packaged VSIX from the command line:
+To pull a local model:
 
 ```sh
-code --install-extension ollama-vscode-0.0.1.vsix
+ollama pull qwen3.6
 ```
 
-You can also install a VSIX from VS Code by running `Extensions: Install from
-VSIX...` from the Command Palette.
+To use a cloud model:
 
-VSIX installs are useful for development and testing, but Marketplace installs
-are the preferred path for general users because VS Code can discover and update
-Marketplace extensions normally.
-
-## Usage
-
-1. Install and start Ollama.
-2. Install this extension.
-3. Open Copilot Chat in VS Code.
-4. Open the model picker.
-5. Select a model from the `Ollama` provider section.
+```sh
+ollama pull kimi-k2.6:cloud
+```
 
 Local models work without signing in to Ollama. Cloud models and cloud-only
-features may require signing in through Ollama first. If a cloud request needs
-sign-in, the extension shows a sign-in prompt and opens the sign-in URL provided
-by the local Ollama server when available.
+features may ask you to sign in when needed.
+
+## Get started
+
+1. Install the Ollama extension from the VS Code Marketplace.
+2. Start Ollama.
+3. Open Chat in VS Code.
+4. Open the model picker.
+5. Choose a model from the `Ollama` section.
+
+The extension discovers models from the Ollama server at
+`http://127.0.0.1:11434` by default.
+
+## Commands
+
+The extension contributes these commands to the Command Palette:
+
+- `Ollama: Refresh Models`: reload the list of Ollama models shown in VS Code.
+- `Ollama: Diagnose Models`: print model discovery information to the Ollama
+  output channel for troubleshooting.
+
+Use `Diagnose Models` if models are available in Ollama but do not appear in the
+VS Code model picker.
 
 ## Configuration
 
@@ -73,12 +75,7 @@ settings:
 }
 ```
 
-The extension checks `/api/version` before model discovery and requires Ollama
-0.6.4 or newer. It lists models from `/api/tags` and reads model details from
-`/api/show`.
-
-VS Code can also pass provider group configuration through
-`chatLanguageModels.json`:
+VS Code can also pass provider configuration through `chatLanguageModels.json`:
 
 ```json
 [
@@ -86,16 +83,39 @@ VS Code can also pass provider group configuration through
     "vendor": "ollama",
     "name": "Ollama",
     "url": "http://127.0.0.1:11434",
-    "models": ["qwen3.5:cloud"],
+    "models": ["qwen3.6"],
     "headers": {}
   }
 ]
 ```
 
-If `models` is omitted, the extension lists all models from `/api/tags`.
-Provider group configuration takes precedence when VS Code supplies it.
+If `models` is omitted, the extension lists all models returned by `/api/tags`.
+Provider configuration from VS Code takes precedence over workspace settings.
+
+## How it works
+
+The extension contributes an Ollama language model provider to VS Code. It lists
+models from Ollama's `/api/tags` endpoint, reads model metadata from
+`/api/show`, and streams chat responses through `/api/chat`.
+
+When a chat request is sent, the extension converts VS Code chat messages,
+tools, and images into Ollama chat requests, then streams text and tool calls
+back to VS Code.
+
+## Troubleshooting
+
+If Ollama models do not appear in VS Code:
+
+1. Make sure Ollama is running.
+2. Run `ollama list` in a terminal and confirm models are available.
+3. Run `Ollama: Refresh Models` from the Command Palette.
+4. Run `Ollama: Diagnose Models` and check the `Ollama` output channel.
+
+If a cloud model asks you to sign in, follow the sign-in prompt shown by VS Code.
 
 ## Development
+
+Install dependencies and compile:
 
 ```sh
 npm install
@@ -104,15 +124,6 @@ npm run compile
 
 Then open this folder in VS Code and use the Extension Development Host.
 
-For a local smoke test:
-
-1. Start Ollama.
-2. Open this repository in VS Code.
-3. Run the `Run Ollama VS Code Extension` debug configuration.
-4. In the Extension Development Host window, run `Ollama: Test Prompt` from the
-   command palette.
-5. Inspect the `Ollama` output channel for model discovery and streaming output.
-
 To package a local VSIX:
 
 ```sh
@@ -120,3 +131,12 @@ npm install
 npm run compile
 npx @vscode/vsce package --out ollama-vscode-0.0.1.vsix
 ```
+
+For local testing, install the packaged VSIX:
+
+```sh
+code --install-extension ollama-vscode-0.0.1.vsix
+```
+
+You can also install a VSIX from VS Code by running `Extensions: Install from
+VSIX...` from the Command Palette.

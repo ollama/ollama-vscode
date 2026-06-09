@@ -16,60 +16,11 @@ export function activate(context: vscode.ExtensionContext) {
     provider,
     vscode.lm.registerLanguageModelChatProvider(ollamaVendor, provider),
     vscode.commands.registerCommand('ollama.refreshModels', () => provider.refresh()),
-    vscode.commands.registerCommand('ollama.testPrompt', () => testPrompt(output)),
     vscode.commands.registerCommand('ollama.diagnoseModels', () => diagnoseModels(output))
   );
 }
 
 export function deactivate() {}
-
-async function testPrompt(output: vscode.OutputChannel) {
-  output.clear();
-  output.show(true);
-  output.appendLine(`Selecting Ollama models through VS Code Language Model API vendor '${ollamaVendor}'.`);
-
-  const models = await vscode.lm.selectChatModels({ vendor: ollamaVendor });
-  if (models.length === 0) {
-    await diagnoseModels(output);
-    vscode.window.showWarningMessage('No Ollama language models are available. Check the Ollama output channel for diagnostics.');
-    return;
-  }
-
-  const picked = await vscode.window.showQuickPick(
-    models.map(model => ({
-      label: model.name,
-      description: model.id,
-      detail: `${model.vendor}/${model.family}`,
-      model
-    })),
-    { placeHolder: 'Select an Ollama model' }
-  );
-  if (!picked) {
-    return;
-  }
-
-  const prompt = await vscode.window.showInputBox({
-    prompt: 'Send a test prompt through the VS Code Language Model API',
-    value: 'Say hello from Ollama in one sentence.'
-  });
-  if (!prompt) {
-    return;
-  }
-
-  output.appendLine(`Model: ${picked.model.id}`);
-  output.appendLine(`Prompt: ${prompt}`);
-  output.appendLine('');
-
-  const response = await picked.model.sendRequest([
-    vscode.LanguageModelChatMessage.User(prompt)
-  ]);
-
-  for await (const chunk of response.text) {
-    output.append(chunk);
-  }
-
-  vscode.window.showInformationMessage('Ollama test prompt completed.');
-}
 
 async function diagnoseModels(output: vscode.OutputChannel) {
   output.show(true);
@@ -81,11 +32,8 @@ async function diagnoseModels(output: vscode.OutputChannel) {
     output.appendLine(`- ${model.vendor}/${model.id} (${model.name})`);
   }
 
-  const productionOllamaVSCodeModels = allVSCodeModels.filter(model => model.vendor === 'ollama');
-  output.appendLine(`VS Code returned ${productionOllamaVSCodeModels.length} production Ollama language model(s).`);
-
-  const devOllamaVSCodeModels = allVSCodeModels.filter(model => model.vendor === ollamaVendor);
-  output.appendLine(`VS Code returned ${devOllamaVSCodeModels.length} dev Ollama language model(s).`);
+  const ollamaVSCodeModels = allVSCodeModels.filter(model => model.vendor === ollamaVendor);
+  output.appendLine(`VS Code returned ${ollamaVSCodeModels.length} Ollama language model(s).`);
 
   const directModels = await listDirectOllamaModels(output);
   if (directModels.length > 0) {
