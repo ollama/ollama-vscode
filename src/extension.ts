@@ -3,7 +3,7 @@ import { OllamaClient } from './ollamaClient';
 import { OllamaLanguageModelProvider } from './provider';
 
 const defaultOllamaURL = 'http://127.0.0.1:11434';
-const ollamaVendor = 'ollama';
+const ollamaVendor = 'ollama-vscode';
 
 export function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel('Ollama');
