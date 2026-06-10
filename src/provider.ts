@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { toOllamaMessages, toOllamaTools } from './convert';
 import { OllamaAPIError, OllamaClient, OllamaShowResponse } from './ollamaClient';
 
@@ -159,9 +159,10 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     const capabilities = show?.capabilities ?? [];
 
     return {
-      id: name,
+      id: languageModelID(name),
       name,
       family: modelFamily(name),
+      tooltip: name,
       version: '1.0',
       maxInputTokens: contextLength(show) ?? defaultMaxInputTokens,
       maxOutputTokens: defaultMaxOutputTokens,
@@ -308,6 +309,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function modelFamily(model: string): string {
   return model.split(':')[0] || model;
+}
+
+function languageModelID(model: string): string {
+  const readable = model.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'model';
+  const hash = createHash('sha256').update(model).digest('hex').slice(0, 8);
+  return `${readable}-${hash}`;
 }
 
 function contextLength(show: OllamaShowResponse | undefined): number | undefined {
