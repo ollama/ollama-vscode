@@ -39,7 +39,8 @@ features may ask you to sign in when needed.
 
 1. Install the Ollama extension from the VS Code Marketplace.
 2. Start Ollama.
-3. Open Chat in VS Code.
+3. Open Chat in VS Code with `Cmd+Ctrl+I`, the Chat icon in the Activity Bar,
+   or `Chat: Open Chat` from the Command Palette.
 4. Open the model picker.
 5. Choose a model from the `Ollama` section.
 
@@ -80,7 +81,7 @@ VS Code can also pass provider configuration through `chatLanguageModels.json`:
 ```json
 [
   {
-    "vendor": "ollama",
+    "vendor": "ollama-vscode",
     "name": "Ollama",
     "url": "http://127.0.0.1:11434",
     "models": ["qwen3.6"],
