@@ -2,7 +2,7 @@
   "name": "ollama-vscode",
   "displayName": "Ollama",
   "description": "Ollama language model provider for VS Code.",
-  "publisher": "ollama",
+  "publisher": "Ollama",
   "version": "0.0.1",
   "license": "MIT",
   "repository": {
