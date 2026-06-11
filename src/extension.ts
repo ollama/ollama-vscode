@@ -56,7 +56,7 @@ async function listDirectOllamaModels(output: vscode.OutputChannel): Promise<str
   const source = new vscode.CancellationTokenSource();
   const timer = setTimeout(() => source.cancel(), 5000);
   try {
-    return await client.listModels(source.token);
+    return (await client.listModels(source.token)).map(model => model.name);
   } catch (error) {
     output.appendLine(`Direct Ollama API failed at ${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
     return [];

@@ -1,8 +1,12 @@
 import * as vscode from 'vscode';
 
-export interface OllamaShowResponse {
+export interface OllamaTagsModel {
+  name: string;
   capabilities?: string[];
   model_info?: Record<string, unknown>;
+  details?: Record<string, unknown>;
+  context_length?: number;
+  max_context_length?: number;
 }
 
 export interface OllamaVersionResponse {
@@ -83,27 +87,15 @@ export class OllamaClient {
     return response.json() as Promise<OllamaVersionResponse>;
   }
 
-  async listModels(token: vscode.CancellationToken): Promise<string[]> {
+  async listModels(token: vscode.CancellationToken): Promise<OllamaTagsModel[]> {
     const response = await fetch(this.url('/api/tags'), {
       headers: this.headers,
       signal: abortSignal(token)
     });
     await throwIfNotOK(response, '/api/tags');
 
-    const body = await response.json() as { models?: Array<{ name: string }> };
-    return (body.models ?? []).map(model => model.name);
-  }
-
-  async show(model: string, token: vscode.CancellationToken): Promise<OllamaShowResponse> {
-    const response = await fetch(this.url('/api/show'), {
-      method: 'POST',
-      headers: this.jsonHeaders(),
-      body: JSON.stringify({ model }),
-      signal: abortSignal(token)
-    });
-    await throwIfNotOK(response, '/api/show');
-
-    return response.json() as Promise<OllamaShowResponse>;
+    const body = await response.json() as { models?: OllamaTagsModel[] };
+    return (body.models ?? []).filter(model => typeof model.name === 'string' && model.name.length > 0);
   }
 
   async *chat(request: OllamaChatRequest, token: vscode.CancellationToken): AsyncIterable<OllamaChatResponse> {

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { createHash, randomUUID } from 'crypto';
 import { toOllamaMessages, toOllamaTools } from './convert';
-import { OllamaAPIError, OllamaClient, OllamaShowResponse } from './ollamaClient';
+import { OllamaAPIError, OllamaClient, OllamaTagsModel } from './ollamaClient';
 
 interface OllamaProviderConfiguration {
   url: string;
@@ -15,30 +15,19 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
   headers: Record<string, string>;
 }
 
-interface CachedModelDetails {
-  show: OllamaShowResponse;
-  expiresAt: number;
-}
-
 const defaultOllamaURL = 'http://127.0.0.1:11434';
 const defaultMaxInputTokens = 8192;
 const defaultMaxOutputTokens = 4096;
 const minimumOllamaVersion = '0.6.4';
-const modelDetailsConcurrency = 6;
-const modelDetailsCacheTTL = 5 * 60 * 1000;
 
 export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProvider<OllamaLanguageModel>, vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
-  private readonly modelDetailsCache = new Map<string, CachedModelDetails>();
-  private readonly pendingModelDetails = new Set<string>();
   readonly onDidChangeLanguageModelChatInformation = this.changeEmitter.event;
 
   constructor(private readonly output?: vscode.OutputChannel) {}
 
   refresh() {
     this.output?.appendLine('Refreshing Ollama language models.');
-    this.modelDetailsCache.clear();
-    this.pendingModelDetails.clear();
     this.changeEmitter.fire();
   }
 
@@ -62,16 +51,18 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       throw new Error(`Ollama ${version} is not supported. Please upgrade to ${minimumOllamaVersion} or newer.`);
     }
 
-    let names: string[];
+    let models: OllamaTagsModel[];
     try {
-      names = configuration.models.length > 0 ? configuration.models : await client.listModels(token);
+      const availableModels = await client.listModels(token);
+      models = configuration.models.length > 0
+        ? selectConfiguredModels(configuration.models, availableModels)
+        : availableModels;
     } catch (error) {
       throw this.userFacingError(error);
     }
-    this.output?.appendLine(`Providing ${names.length} Ollama model(s) from ${configuration.url} with Ollama ${version}.`);
+    this.output?.appendLine(`Providing ${models.length} Ollama model(s) from ${configuration.url} with Ollama ${version}.`);
 
-    void this.refreshModelDetails(client, configuration, names);
-    return names.map(name => this.toLanguageModel(name, configuration, this.getCachedModelDetails(configuration, name)));
+    return models.map(model => this.toLanguageModel(model, configuration));
   }
 
   async provideLanguageModelChatResponse(
@@ -152,115 +143,29 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   }
 
   private toLanguageModel(
-    name: string,
-    configuration: OllamaProviderConfiguration,
-    show: OllamaShowResponse | undefined
+    model: OllamaTagsModel,
+    configuration: OllamaProviderConfiguration
   ): OllamaLanguageModel {
-    const capabilities = show?.capabilities ?? [];
+    const capabilities = model.capabilities ?? [];
+    const name = model.name;
 
     return {
       id: languageModelID(name),
       name,
-      family: modelFamily(name),
+      family: modelFamily(model),
       tooltip: name,
       version: '1.0',
-      maxInputTokens: contextLength(show) ?? defaultMaxInputTokens,
+      maxInputTokens: contextLength(model) ?? defaultMaxInputTokens,
       maxOutputTokens: defaultMaxOutputTokens,
       capabilities: {
-        toolCalling: capabilities.includes('tools'),
-        imageInput: capabilities.includes('vision')
+        toolCalling: hasCapability(capabilities, 'tools', 'tool'),
+        imageInput: hasCapability(capabilities, 'vision', 'image')
       },
       model: name,
       url: configuration.url,
       headers: configuration.headers
     };
   }
-
-  private getCachedModelDetails(
-    configuration: OllamaProviderConfiguration,
-    model: string
-  ): OllamaShowResponse | undefined {
-    const key = modelDetailsCacheKey(configuration, model);
-    const cached = this.modelDetailsCache.get(key);
-    if (cached && cached.expiresAt > Date.now()) {
-      return cached.show;
-    }
-    return undefined;
-  }
-
-  private async refreshModelDetails(
-    client: OllamaClient,
-    configuration: OllamaProviderConfiguration,
-    names: readonly string[]
-  ): Promise<void> {
-    const missing = names
-      .map(name => ({ name, key: modelDetailsCacheKey(configuration, name) }))
-      .filter(({ name, key }) =>
-        !this.pendingModelDetails.has(key) &&
-        this.getCachedModelDetails(configuration, name) === undefined
-      );
-
-    if (missing.length === 0) {
-      return;
-    }
-
-    for (const { key } of missing) {
-      this.pendingModelDetails.add(key);
-    }
-
-    this.output?.appendLine(`Reading details for ${missing.length} Ollama model(s) in the background.`);
-    const source = new vscode.CancellationTokenSource();
-    let updated = false;
-
-    try {
-      await mapWithConcurrency(missing, modelDetailsConcurrency, async ({ name, key }) => {
-        try {
-          const show = await client.show(name, source.token);
-          this.modelDetailsCache.set(key, {
-            show,
-            expiresAt: Date.now() + modelDetailsCacheTTL
-          });
-          updated = true;
-        } catch (error) {
-          this.output?.appendLine(`Could not read model details for ${name}: ${formatError(error)}`);
-        } finally {
-          this.pendingModelDetails.delete(key);
-        }
-      });
-    } finally {
-      for (const { key } of missing) {
-        this.pendingModelDetails.delete(key);
-      }
-      source.dispose();
-    }
-
-    if (updated) {
-      this.changeEmitter.fire();
-    }
-  }
-}
-
-async function mapWithConcurrency<T, U>(
-  items: readonly T[],
-  concurrency: number,
-  fn: (item: T) => Promise<U>
-): Promise<U[]> {
-  const results = new Array<U>(items.length);
-  let index = 0;
-
-  async function worker() {
-    for (;;) {
-      const current = index++;
-      if (current >= items.length) {
-        return;
-      }
-      results[current] = await fn(items[current]);
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, worker);
-  await Promise.all(workers);
-  return results;
 }
 
 function getConfiguration(options?: vscode.PrepareLanguageModelChatModelOptions): OllamaProviderConfiguration {
@@ -279,12 +184,12 @@ function getConfiguration(options?: vscode.PrepareLanguageModelChatModelOptions)
   };
 }
 
-function modelDetailsCacheKey(configuration: OllamaProviderConfiguration, model: string): string {
-  return JSON.stringify({
-    url: configuration.url,
-    model,
-    headers: Object.entries(configuration.headers).sort(([a], [b]) => a.localeCompare(b))
-  });
+function selectConfiguredModels(
+  configuredModels: readonly string[],
+  availableModels: readonly OllamaTagsModel[]
+): OllamaTagsModel[] {
+  const byName = new Map(availableModels.map(model => [model.name, model]));
+  return configuredModels.map(name => byName.get(name) ?? { name });
 }
 
 function getConfiguredHeaders(
@@ -307,8 +212,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function modelFamily(model: string): string {
-  return model.split(':')[0] || model;
+function modelFamily(model: OllamaTagsModel): string {
+  const family = model.details?.family;
+  return typeof family === 'string' && family.length > 0
+    ? family
+    : model.name.split(':')[0] || model.name;
 }
 
 function languageModelID(model: string): string {
@@ -317,13 +225,24 @@ function languageModelID(model: string): string {
   return `${readable}-${hash}`;
 }
 
-function contextLength(show: OllamaShowResponse | undefined): number | undefined {
-  for (const [key, value] of Object.entries(show?.model_info ?? {})) {
+function contextLength(model: OllamaTagsModel): number | undefined {
+  if (typeof model.context_length === 'number') {
+    return model.context_length;
+  }
+  if (typeof model.max_context_length === 'number') {
+    return model.max_context_length;
+  }
+  for (const [key, value] of Object.entries(model.model_info ?? {})) {
     if (key.endsWith('.context_length') && typeof value === 'number') {
       return value;
     }
   }
   return undefined;
+}
+
+function hasCapability(capabilities: readonly string[], ...expected: string[]): boolean {
+  const values = new Set(capabilities.map(capability => capability.toLowerCase()));
+  return expected.some(capability => values.has(capability));
 }
 
 function isVersionSupported(version: string, minimum: string): boolean {

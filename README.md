@@ -95,8 +95,8 @@ Provider configuration from VS Code takes precedence over workspace settings.
 ## How it works
 
 The extension contributes an Ollama language model provider to VS Code. It lists
-models from Ollama's `/api/tags` endpoint, reads model metadata from
-`/api/show`, and streams chat responses through `/api/chat`.
+models and model metadata from Ollama's `/api/tags` endpoint, and streams chat
+responses through `/api/chat`.
 
 When a chat request is sent, the extension converts VS Code chat messages,
 tools, and images into Ollama chat requests, then streams text and tool calls
