@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { toOllamaMessages, toOllamaTools } from './convert';
-import { OllamaAPIError, OllamaClient, OllamaTagsModel } from './ollamaClient';
+import { ModelInfo, OllamaAPIError, OllamaClient, OllamaShowResponse, OllamaTagsModel } from './ollamaClient';
 
 interface OllamaProviderConfiguration {
   url: string;
@@ -16,12 +16,12 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
 }
 
 const defaultOllamaURL = 'http://127.0.0.1:11434';
-const defaultMaxInputTokens = 8192;
-const defaultMaxOutputTokens = 4096;
-const minimumOllamaVersion = '0.6.4';
+const fallbackMaxInputTokens = 4096;
+const defaultCharsPerToken = 4;
 
 export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProvider<OllamaLanguageModel>, vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
+  private readonly tokenCounts = new CalibratedTokenEstimator();
   readonly onDidChangeLanguageModelChatInformation = this.changeEmitter.event;
 
   constructor(private readonly output?: vscode.OutputChannel) {}
@@ -41,15 +41,9 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   ): Promise<OllamaLanguageModel[]> {
     const configuration = getConfiguration(options);
     const client = new OllamaClient(configuration.url, configuration.headers);
-    let version: string;
-    try {
-      ({ version } = await client.version(token));
-    } catch (error) {
-      throw this.userFacingError(error);
-    }
-    if (!isVersionSupported(version, minimumOllamaVersion)) {
-      throw new Error(`Ollama ${version} is not supported. Please upgrade to ${minimumOllamaVersion} or newer.`);
-    }
+    const version = await client.version(token)
+      .then(response => response.version)
+      .catch(() => undefined);
 
     let models: OllamaTagsModel[];
     try {
@@ -60,9 +54,12 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     } catch (error) {
       throw this.userFacingError(error);
     }
-    this.output?.appendLine(`Providing ${models.length} Ollama model(s) from ${configuration.url} with Ollama ${version}.`);
+    const hydratedModels = await hydrateModels(client, models, configuration.models, token);
 
-    return models.map(model => this.toLanguageModel(model, configuration));
+    const versionSuffix = version ? ` with Ollama ${version}` : '';
+    this.output?.appendLine(`Providing ${models.length} Ollama model(s) from ${configuration.url}${versionSuffix}.`);
+
+    return hydratedModels.map(({ model, show }) => this.toLanguageModel(model, show, configuration));
   }
 
   async provideLanguageModelChatResponse(
@@ -77,6 +74,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     this.output?.appendLine(`Sending chat request to ${model.model} at ${model.url}.`);
 
     try {
+      let promptTokenCount: number | undefined;
       for await (const chunk of client.chat({
         model: model.model,
         messages: toOllamaMessages(messages),
@@ -84,6 +82,10 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
         tools: tools.length > 0 ? tools : undefined,
         options: options.modelOptions ? { ...options.modelOptions } : undefined
       }, token)) {
+        if (typeof chunk.prompt_eval_count === 'number' && chunk.prompt_eval_count > 0) {
+          promptTokenCount = chunk.prompt_eval_count;
+        }
+
         const content = chunk.message?.content;
         if (content) {
           progress.report(new vscode.LanguageModelTextPart(content));
@@ -97,18 +99,20 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
           ));
         }
       }
+      if (promptTokenCount !== undefined) {
+        this.tokenCounts.record(model.id, messages, promptTokenCount);
+      }
     } catch (error) {
       throw await this.handleChatError(model, error);
     }
   }
 
   async provideTokenCount(
-    _model: OllamaLanguageModel,
+    model: OllamaLanguageModel,
     input: string | vscode.LanguageModelChatRequestMessage,
     _token: vscode.CancellationToken
   ): Promise<number> {
-    const text = typeof input === 'string' ? input : input.content.map(partToText).join('\n');
-    return Math.ceil(text.length / 4);
+    return this.tokenCounts.count(model.id, input);
   }
 
   private async handleChatError(model: OllamaLanguageModel, error: unknown): Promise<Error> {
@@ -116,11 +120,11 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
 
     if (isAuthError(error)) {
       const message = isCloudModel(model.model)
-        ? `Sign in to Ollama to use ${model.model}.`
-        : 'Sign in to Ollama and try again.';
+        ? `Run ollama signin to use ${model.model}.`
+        : 'Run ollama signin and try again.';
 
       if (error.signinURL) {
-        const action = 'Sign In';
+        const action = 'Sign in to Ollama';
         const selected = await vscode.window.showErrorMessage(message, action);
         if (selected === action) {
           await vscode.env.openExternal(vscode.Uri.parse(error.signinURL));
@@ -137,26 +141,28 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
 
   private userFacingError(error: unknown): Error {
     if (isAuthError(error)) {
-      return new Error('Sign in to Ollama and try again.');
+      return new Error('Run ollama signin and try again.');
     }
     return error instanceof Error ? error : new Error(String(error));
   }
 
   private toLanguageModel(
     model: OllamaTagsModel,
+    show: OllamaShowResponse | undefined,
     configuration: OllamaProviderConfiguration
   ): OllamaLanguageModel {
-    const capabilities = model.capabilities ?? [];
+    const capabilities = model.capabilities ?? show?.capabilities ?? [];
     const name = model.name;
+    const maxInputTokens = tokenLimit(model, show, 'input') ?? fallbackMaxInputTokens;
 
     return {
-      id: languageModelID(name),
+      id: name,
       name,
-      family: modelFamily(model),
+      family: modelFamily(model, show),
       tooltip: name,
       version: '1.0',
-      maxInputTokens: contextLength(model) ?? defaultMaxInputTokens,
-      maxOutputTokens: defaultMaxOutputTokens,
+      maxInputTokens,
+      maxOutputTokens: tokenLimit(model, show, 'output') ?? maxInputTokens,
       capabilities: {
         toolCalling: hasCapability(capabilities, 'tools', 'tool'),
         imageInput: hasCapability(capabilities, 'vision', 'image')
@@ -192,6 +198,29 @@ function selectConfiguredModels(
   return configuredModels.map(name => byName.get(name) ?? { name });
 }
 
+async function hydrateModels(
+  client: OllamaClient,
+  models: readonly OllamaTagsModel[],
+  configuredModels: readonly string[],
+  token: vscode.CancellationToken
+): Promise<Array<{ model: OllamaTagsModel; show?: OllamaShowResponse }>> {
+  const configured = new Set(configuredModels);
+  const hydrated: Array<{ model: OllamaTagsModel; show?: OllamaShowResponse }> = [];
+  for (const model of models) {
+    hydrated.push({
+      model,
+      show: configured.has(model.name) && isFallbackModel(model)
+        ? await client.showModel(model.name, token).catch(() => undefined)
+        : undefined
+    });
+  }
+  return hydrated;
+}
+
+function isFallbackModel(model: OllamaTagsModel): boolean {
+  return model.details === undefined && model.capabilities === undefined;
+}
+
 function getConfiguredHeaders(
   configuration: { readonly [key: string]: unknown } | undefined,
   settings: vscode.WorkspaceConfiguration
@@ -212,28 +241,58 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function modelFamily(model: OllamaTagsModel): string {
-  const family = model.details?.family;
+function modelFamily(model: OllamaTagsModel, show: OllamaShowResponse | undefined): string {
+  const family = model.details?.family ?? show?.details?.family;
   return typeof family === 'string' && family.length > 0
     ? family
     : model.name.split(':')[0] || model.name;
 }
 
-function languageModelID(model: string): string {
-  const readable = model.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'model';
-  const hash = createHash('sha256').update(model).digest('hex').slice(0, 8);
-  return `${readable}-${hash}`;
+function tokenLimit(
+  model: OllamaTagsModel,
+  show: OllamaShowResponse | undefined,
+  kind: 'input' | 'output'
+): number | undefined {
+  const keys = kind === 'input'
+    ? ['max_input_tokens', 'max_context_length', 'context_length']
+    : ['max_output_tokens'];
+
+  for (const value of [
+    numericField(model, keys),
+    numericField(show, keys),
+    numericField(model.details, keys),
+    numericField(show?.details, keys),
+    numericModelInfoValue(model.model_info, keys),
+    numericModelInfoValue(show?.model_info, keys)
+  ]) {
+    if (value !== undefined && value > 0) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
-function contextLength(model: OllamaTagsModel): number | undefined {
-  if (typeof model.context_length === 'number') {
-    return model.context_length;
+function numericField(value: unknown, keys: readonly string[]): number | undefined {
+  if (!isRecord(value)) {
+    return undefined;
   }
-  if (typeof model.max_context_length === 'number') {
-    return model.max_context_length;
+  for (const key of keys) {
+    const field = value[key];
+    if (typeof field === 'number') {
+      return field;
+    }
   }
-  for (const [key, value] of Object.entries(model.model_info ?? {})) {
-    if (key.endsWith('.context_length') && typeof value === 'number') {
+  return undefined;
+}
+
+function numericModelInfoValue(modelInfo: ModelInfo | undefined, keys: readonly string[]): number | undefined {
+  if (!modelInfo) {
+    return undefined;
+  }
+
+  const entries = modelInfo instanceof Map ? modelInfo.entries() : Object.entries(modelInfo);
+  for (const [key, value] of entries) {
+    if (keys.some(expected => key.endsWith(`.${expected}`) || key === expected) && typeof value === 'number') {
       return value;
     }
   }
@@ -243,31 +302,6 @@ function contextLength(model: OllamaTagsModel): number | undefined {
 function hasCapability(capabilities: readonly string[], ...expected: string[]): boolean {
   const values = new Set(capabilities.map(capability => capability.toLowerCase()));
   return expected.some(capability => values.has(capability));
-}
-
-function isVersionSupported(version: string, minimum: string): boolean {
-  if (version === '0.0.0') {
-    return true;
-  }
-
-  const currentParts = parseVersion(version);
-  const minimumParts = parseVersion(minimum);
-  const length = Math.max(currentParts.length, minimumParts.length);
-  for (let i = 0; i < length; i++) {
-    const current = currentParts[i] ?? 0;
-    const required = minimumParts[i] ?? 0;
-    if (current > required) {
-      return true;
-    }
-    if (current < required) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function parseVersion(version: string): number[] {
-  return version.split('.').map(part => Number.parseInt(part, 10) || 0);
 }
 
 function isAuthError(error: unknown): error is OllamaAPIError {
@@ -291,4 +325,32 @@ function partToText(part: vscode.LanguageModelInputPart | unknown): string {
     return new TextDecoder().decode(part.data);
   }
   return '';
+}
+
+class CalibratedTokenEstimator {
+  private readonly charsPerToken = new Map<string, number>();
+
+  count(modelID: string, input: string | vscode.LanguageModelChatRequestMessage): number {
+    const text = inputToText(input);
+    if (text.length === 0) {
+      return 0;
+    }
+    return Math.max(1, Math.ceil(text.length / (this.charsPerToken.get(modelID) ?? defaultCharsPerToken)));
+  }
+
+  record(modelID: string, messages: readonly vscode.LanguageModelChatRequestMessage[], actual: number) {
+    const texts = messages.map(message => inputToText(message));
+    const text = texts.join('\n');
+    if (text.length === 0 || actual <= 0) {
+      return;
+    }
+
+    const observedCharsPerToken = text.length / actual;
+    const currentCharsPerToken = this.charsPerToken.get(modelID) ?? defaultCharsPerToken;
+    this.charsPerToken.set(modelID, (currentCharsPerToken + observedCharsPerToken) / 2);
+  }
+}
+
+function inputToText(input: string | vscode.LanguageModelChatRequestMessage): string {
+  return typeof input === 'string' ? input : input.content.map(partToText).join('\n');
 }
