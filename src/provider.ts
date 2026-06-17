@@ -1,7 +1,17 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
 import { toOllamaMessages, toOllamaTools } from './convert';
-import { ModelInfo, OllamaAPIError, OllamaClient, OllamaShowResponse, OllamaTagsModel } from './ollamaClient';
+import {
+  ChatRequest,
+  ChatResponse,
+  ModelInfo,
+  OllamaAPIError,
+  OllamaChatResponse,
+  OllamaShowResponse,
+  OllamaTagsModel,
+  createOllama,
+  disposeAll
+} from './ollama';
 
 interface OllamaProviderConfiguration {
   url: string;
@@ -40,26 +50,32 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     token: vscode.CancellationToken
   ): Promise<OllamaLanguageModel[]> {
     const configuration = getConfiguration(options);
-    const client = new OllamaClient(configuration.url, configuration.headers);
-    const version = await client.version(token)
+    const disposables: vscode.Disposable[] = [];
+    const ollama = createOllama(configuration.url, configuration.headers, token, disposables);
+    const version = await ollama.version()
       .then(response => response.version)
       .catch(() => undefined);
 
-    let models: OllamaTagsModel[];
     try {
-      const availableModels = await client.listModels(token);
-      models = configuration.models.length > 0
-        ? selectConfiguredModels(configuration.models, availableModels)
-        : availableModels;
-    } catch (error) {
-      throw this.userFacingError(error);
+      let models: OllamaTagsModel[];
+      try {
+        const body = await ollama.list();
+        const availableModels = ((body.models ?? []) as unknown[]).filter(isOllamaTagsModel);
+        models = configuration.models.length > 0
+          ? selectConfiguredModels(configuration.models, availableModels)
+          : availableModels;
+      } catch (error) {
+        throw this.userFacingError(error);
+      }
+      const hydratedModels = await hydrateModels(ollama, models, configuration.models);
+
+      const versionSuffix = version ? ` with Ollama ${version}` : '';
+      this.output?.appendLine(`Providing ${models.length} Ollama model(s) from ${configuration.url}${versionSuffix}.`);
+
+      return hydratedModels.map(({ model, show }) => this.toLanguageModel(model, show, configuration));
+    } finally {
+      disposeAll(disposables);
     }
-    const hydratedModels = await hydrateModels(client, models, configuration.models, token);
-
-    const versionSuffix = version ? ` with Ollama ${version}` : '';
-    this.output?.appendLine(`Providing ${models.length} Ollama model(s) from ${configuration.url}${versionSuffix}.`);
-
-    return hydratedModels.map(({ model, show }) => this.toLanguageModel(model, show, configuration));
   }
 
   async provideLanguageModelChatResponse(
@@ -69,29 +85,35 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken
   ): Promise<void> {
-    const client = new OllamaClient(model.url, model.headers);
+    const disposables: vscode.Disposable[] = [];
+    const ollama = createOllama(model.url, model.headers, token, disposables);
     const tools = toOllamaTools(options.tools);
     this.output?.appendLine(`Sending chat request to ${model.model} at ${model.url}.`);
 
     try {
       let promptTokenCount: number | undefined;
-      for await (const chunk of client.chat({
+      const stream = await ollama.chat({
         model: model.model,
         messages: toOllamaMessages(messages),
         stream: true,
         tools: tools.length > 0 ? tools : undefined,
         options: options.modelOptions ? { ...options.modelOptions } : undefined
-      }, token)) {
+      } as ChatRequest & { stream: true });
+      const streamDisposable = token.onCancellationRequested(() => stream.abort());
+      disposables.push(streamDisposable);
+
+      for await (const chunk of stream as AsyncIterable<ChatResponse>) {
+        const response = chunk as OllamaChatResponse;
         if (typeof chunk.prompt_eval_count === 'number' && chunk.prompt_eval_count > 0) {
           promptTokenCount = chunk.prompt_eval_count;
         }
 
-        const content = chunk.message?.content;
+        const content = response.message?.content;
         if (content) {
           progress.report(new vscode.LanguageModelTextPart(content));
         }
 
-        for (const toolCall of chunk.message?.tool_calls ?? []) {
+        for (const toolCall of response.message?.tool_calls ?? []) {
           progress.report(new vscode.LanguageModelToolCallPart(
             toolCall.id ?? randomUUID(),
             toolCall.function.name,
@@ -104,6 +126,8 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       }
     } catch (error) {
       throw await this.handleChatError(model, error);
+    } finally {
+      disposeAll(disposables);
     }
   }
 
@@ -199,10 +223,9 @@ function selectConfiguredModels(
 }
 
 async function hydrateModels(
-  client: OllamaClient,
+  ollama: ReturnType<typeof createOllama>,
   models: readonly OllamaTagsModel[],
-  configuredModels: readonly string[],
-  token: vscode.CancellationToken
+  configuredModels: readonly string[]
 ): Promise<Array<{ model: OllamaTagsModel; show?: OllamaShowResponse }>> {
   const configured = new Set(configuredModels);
   const hydrated: Array<{ model: OllamaTagsModel; show?: OllamaShowResponse }> = [];
@@ -210,11 +233,15 @@ async function hydrateModels(
     hydrated.push({
       model,
       show: configured.has(model.name) && isFallbackModel(model)
-        ? await client.showModel(model.name, token).catch(() => undefined)
+        ? await ollama.show({ model: model.name }).then(show => show as OllamaShowResponse).catch(() => undefined)
         : undefined
     });
   }
   return hydrated;
+}
+
+function isOllamaTagsModel(model: unknown): model is OllamaTagsModel {
+  return isRecord(model) && typeof model.name === 'string' && model.name.length > 0;
 }
 
 function isFallbackModel(model: OllamaTagsModel): boolean {

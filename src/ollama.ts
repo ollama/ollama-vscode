@@ -1,16 +1,16 @@
 import * as vscode from 'vscode';
 import {
   Ollama,
-  AbortableAsyncIterator,
   ChatRequest,
   ChatResponse,
   Message,
   ModelResponse,
   ShowResponse,
   Tool,
-  ToolCall,
-  VersionResponse
+  ToolCall
 } from 'ollama';
+
+export { Ollama, ChatRequest, ChatResponse };
 
 export interface OllamaTagsModel {
   name: string;
@@ -26,8 +26,6 @@ export interface OllamaTagsModel {
   max_input_tokens?: number;
   max_output_tokens?: number;
 }
-
-export type OllamaVersionResponse = VersionResponse;
 
 export interface OllamaShowResponse extends Omit<ShowResponse, 'model_info'> {
   model_info?: ModelInfo;
@@ -93,63 +91,17 @@ export class OllamaAPIError extends Error {
   }
 }
 
-export class OllamaClient {
-  constructor(
-    private readonly baseURL: string,
-    private readonly headers: Record<string, string> = {}
-  ) {}
-
-  async version(token: vscode.CancellationToken): Promise<OllamaVersionResponse> {
-    const disposables: vscode.Disposable[] = [];
-    try {
-      return await this.client(token, disposables).version();
-    } finally {
-      disposeAll(disposables);
-    }
-  }
-
-  async listModels(token: vscode.CancellationToken): Promise<OllamaTagsModel[]> {
-    const disposables: vscode.Disposable[] = [];
-    try {
-      const body = await this.client(token, disposables).list();
-      return (body.models ?? []).filter(model => typeof model.name === 'string' && model.name.length > 0) as unknown as OllamaTagsModel[];
-    } finally {
-      disposeAll(disposables);
-    }
-  }
-
-  async showModel(model: string, token: vscode.CancellationToken): Promise<OllamaShowResponse> {
-    const disposables: vscode.Disposable[] = [];
-    try {
-      return await this.client(token, disposables).show({ model }) as OllamaShowResponse;
-    } finally {
-      disposeAll(disposables);
-    }
-  }
-
-  async *chat(request: OllamaChatRequest, token: vscode.CancellationToken): AsyncIterable<OllamaChatResponse> {
-    const disposables: vscode.Disposable[] = [];
-    let stream: AbortableAsyncIterator<ChatResponse> | undefined;
-    let streamDisposable: vscode.Disposable | undefined;
-    try {
-      stream = await this.client(token, disposables).chat(request as ChatRequest & { stream: true });
-      streamDisposable = token.onCancellationRequested(() => stream?.abort());
-      for await (const chunk of stream) {
-        yield chunk as OllamaChatResponse;
-      }
-    } finally {
-      streamDisposable?.dispose();
-      disposeAll(disposables);
-    }
-  }
-
-  private client(token: vscode.CancellationToken, disposables: vscode.Disposable[]): Ollama {
-    return new Ollama({
-      host: this.baseURL,
-      headers: this.headers,
-      fetch: createFetch(token, disposables)
-    });
-  }
+export function createOllama(
+  baseURL: string,
+  headers: Record<string, string>,
+  token: vscode.CancellationToken,
+  disposables: vscode.Disposable[]
+): Ollama {
+  return new Ollama({
+    host: baseURL,
+    headers,
+    fetch: createFetch(token, disposables)
+  });
 }
 
 function createFetch(token: vscode.CancellationToken, disposables: vscode.Disposable[]): typeof fetch {
@@ -191,7 +143,7 @@ function abortSignal(token: vscode.CancellationToken, signal?: AbortSignal | nul
   };
 }
 
-function disposeAll(disposables: readonly vscode.Disposable[]) {
+export function disposeAll(disposables: readonly vscode.Disposable[]) {
   for (const disposable of disposables) {
     disposable.dispose();
   }
