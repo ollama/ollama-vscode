@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { OllamaClient } from './ollamaClient';
-import { OllamaLanguageModelProvider } from './provider';
+import { Ollama } from 'ollama';
+import { OllamaLanguageModelProvider, createFetch, disposeAll } from './provider';
 
 const defaultOllamaURL = 'http://127.0.0.1:11434';
 const ollamaVendor = 'ollama-vscode';
@@ -52,17 +52,24 @@ async function diagnoseModels(output: vscode.OutputChannel) {
 async function listDirectOllamaModels(output: vscode.OutputChannel): Promise<string[]> {
   const settings = vscode.workspace.getConfiguration('ollama');
   const endpoint = settings.get<string>('endpoint', defaultOllamaURL) || defaultOllamaURL;
-  const client = new OllamaClient(endpoint, getConfiguredHeaders(settings));
   const source = new vscode.CancellationTokenSource();
+  const disposables: vscode.Disposable[] = [source];
+  const ollama = new Ollama({
+    host: endpoint,
+    headers: getConfiguredHeaders(settings),
+    fetch: createFetch(source.token, disposables)
+  });
   const timer = setTimeout(() => source.cancel(), 5000);
   try {
-    return (await client.listModels(source.token)).map(model => model.name);
+    return ((await ollama.list()).models ?? [])
+      .filter(model => typeof model.name === 'string' && model.name.length > 0)
+      .map(model => model.name);
   } catch (error) {
     output.appendLine(`Direct Ollama API failed at ${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
     return [];
   } finally {
     clearTimeout(timer);
-    source.dispose();
+    disposeAll(disposables);
   }
 }
 

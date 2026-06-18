@@ -20,6 +20,9 @@ editor.
 - Ollama installed and running.
 - At least one Ollama model available locally or from Ollama cloud.
 
+Ollama 0.17.6 or newer is recommended for cloud model sign-in and richer model
+metadata. Older Ollama versions may still work for local models.
+
 To pull a local model:
 
 ```sh
@@ -32,8 +35,8 @@ To use a cloud model:
 ollama pull kimi-k2.6:cloud
 ```
 
-Local models work without signing in to Ollama. Cloud models and cloud-only
-features may ask you to sign in when needed.
+Local models work without signing in to Ollama. To use cloud models and
+cloud-only features, run `ollama signin` when prompted.
 
 ## Get started
 
@@ -92,16 +95,6 @@ VS Code can also pass provider configuration through `chatLanguageModels.json`:
 If `models` is omitted, the extension lists all models returned by `/api/tags`.
 Provider configuration from VS Code takes precedence over workspace settings.
 
-## How it works
-
-The extension contributes an Ollama language model provider to VS Code. It lists
-models and model metadata from Ollama's `/api/tags` endpoint, and streams chat
-responses through `/api/chat`.
-
-When a chat request is sent, the extension converts VS Code chat messages,
-tools, and images into Ollama chat requests, then streams text and tool calls
-back to VS Code.
-
 ## Troubleshooting
 
 If Ollama models do not appear in VS Code:
@@ -111,7 +104,8 @@ If Ollama models do not appear in VS Code:
 3. Run `Ollama: Refresh Models` from the Command Palette.
 4. Run `Ollama: Diagnose Models` and check the `Ollama` output channel.
 
-If a cloud model asks you to sign in, follow the sign-in prompt shown by VS Code.
+If a cloud model asks you to sign in, run `ollama signin` and follow the
+sign-in prompt shown by VS Code.
 
 ## Development
 
