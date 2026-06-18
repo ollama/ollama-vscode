@@ -25,7 +25,7 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
 }
 
 const defaultOllamaURL = 'http://127.0.0.1:11434';
-const fallbackMaxInputTokens = 4096;
+const fallbackMaxInputTokens = 32768;
 const defaultCharsPerToken = 4;
 
 export interface OllamaTagsModel {
