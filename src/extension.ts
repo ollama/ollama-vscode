@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { createOllama, disposeAll } from './ollama';
-import { OllamaLanguageModelProvider } from './provider';
+import { Ollama } from 'ollama';
+import { OllamaLanguageModelProvider, createFetch, disposeAll } from './provider';
 
 const defaultOllamaURL = 'http://127.0.0.1:11434';
 const ollamaVendor = 'ollama-vscode';
@@ -54,7 +54,11 @@ async function listDirectOllamaModels(output: vscode.OutputChannel): Promise<str
   const endpoint = settings.get<string>('endpoint', defaultOllamaURL) || defaultOllamaURL;
   const source = new vscode.CancellationTokenSource();
   const disposables: vscode.Disposable[] = [source];
-  const ollama = createOllama(endpoint, getConfiguredHeaders(settings), source.token, disposables);
+  const ollama = new Ollama({
+    host: endpoint,
+    headers: getConfiguredHeaders(settings),
+    fetch: createFetch(source.token, disposables)
+  });
   const timer = setTimeout(() => source.cancel(), 5000);
   try {
     return ((await ollama.list()).models ?? [])

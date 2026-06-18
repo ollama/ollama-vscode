@@ -1,17 +1,16 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
-import { toOllamaMessages, toOllamaTools } from './convert';
 import {
+  Ollama,
   ChatRequest,
   ChatResponse,
-  ModelInfo,
-  OllamaAPIError,
-  OllamaChatResponse,
-  OllamaShowResponse,
-  OllamaTagsModel,
-  createOllama,
-  disposeAll
-} from './ollama';
+  Message,
+  ModelResponse,
+  ShowResponse,
+  Tool,
+  ToolCall
+} from 'ollama';
+import { toOllamaMessages, toOllamaTools } from './convert';
 
 interface OllamaProviderConfiguration {
   url: string;
@@ -28,6 +27,79 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
 const defaultOllamaURL = 'http://127.0.0.1:11434';
 const fallbackMaxInputTokens = 4096;
 const defaultCharsPerToken = 4;
+
+export interface OllamaTagsModel {
+  name: string;
+  model?: string;
+  modified_at?: Date;
+  size?: number;
+  digest?: string;
+  capabilities?: string[];
+  model_info?: ModelInfo;
+  details?: Partial<ModelResponse['details']> & Record<string, unknown>;
+  context_length?: number;
+  max_context_length?: number;
+  max_input_tokens?: number;
+  max_output_tokens?: number;
+}
+
+interface OllamaShowResponse extends Omit<ShowResponse, 'model_info'> {
+  model_info?: ModelInfo;
+  context_length?: number;
+  max_context_length?: number;
+  max_input_tokens?: number;
+  max_output_tokens?: number;
+}
+
+type ModelInfo = Record<string, unknown> | Map<string, unknown>;
+
+export interface OllamaChatMessage extends Message {
+  images?: string[];
+  tool_calls?: OllamaToolCall[];
+  tool_call_id?: string;
+}
+
+export interface OllamaTool extends Tool {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters?: object;
+  };
+}
+
+interface OllamaToolCall extends ToolCall {
+  id?: string;
+  function: {
+    name: string;
+    arguments: Record<string, unknown>;
+  };
+}
+
+interface OllamaChatResponse extends Partial<Omit<ChatResponse, 'message'>> {
+  message?: {
+    content?: string;
+    tool_calls?: OllamaToolCall[];
+  };
+  done?: boolean;
+}
+
+interface OllamaErrorResponse {
+  error?: string;
+  signin_url?: string;
+}
+
+class OllamaAPIError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly endpoint: string,
+    readonly responseError?: string,
+    readonly signinURL?: string
+  ) {
+    super(message);
+  }
+}
 
 export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProvider<OllamaLanguageModel>, vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
@@ -51,7 +123,11 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   ): Promise<OllamaLanguageModel[]> {
     const configuration = getConfiguration(options);
     const disposables: vscode.Disposable[] = [];
-    const ollama = createOllama(configuration.url, configuration.headers, token, disposables);
+    const ollama = new Ollama({
+      host: configuration.url,
+      headers: configuration.headers,
+      fetch: createFetch(token, disposables)
+    });
     const version = await ollama.version()
       .then(response => response.version)
       .catch(() => undefined);
@@ -86,7 +162,11 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     token: vscode.CancellationToken
   ): Promise<void> {
     const disposables: vscode.Disposable[] = [];
-    const ollama = createOllama(model.url, model.headers, token, disposables);
+    const ollama = new Ollama({
+      host: model.url,
+      headers: model.headers,
+      fetch: createFetch(token, disposables)
+    });
     const tools = toOllamaTools(options.tools);
     this.output?.appendLine(`Sending chat request to ${model.model} at ${model.url}.`);
 
@@ -223,7 +303,7 @@ function selectConfiguredModels(
 }
 
 async function hydrateModels(
-  ollama: ReturnType<typeof createOllama>,
+  ollama: Ollama,
   models: readonly OllamaTagsModel[],
   configuredModels: readonly string[]
 ): Promise<Array<{ model: OllamaTagsModel; show?: OllamaShowResponse }>> {
@@ -380,4 +460,91 @@ class CalibratedTokenEstimator {
 
 function inputToText(input: string | vscode.LanguageModelChatRequestMessage): string {
   return typeof input === 'string' ? input : input.content.map(partToText).join('\n');
+}
+
+export function createFetch(token: vscode.CancellationToken, disposables: vscode.Disposable[]): typeof fetch {
+  return async (input, init) => {
+    const linkedSignal = abortSignal(token, init?.signal);
+    disposables.push(linkedSignal);
+    const response = await fetch(input, {
+      ...init,
+      signal: linkedSignal.signal
+    });
+    await throwIfNotOK(response, endpoint(input));
+    return response;
+  };
+}
+
+function abortSignal(token: vscode.CancellationToken, signal?: AbortSignal | null): vscode.Disposable & { signal: AbortSignal } {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const disposable = token.onCancellationRequested(abort);
+  let disposed = false;
+
+  if (signal) {
+    signal.addEventListener('abort', abort, { once: true });
+  }
+  if (token.isCancellationRequested || signal?.aborted) {
+    controller.abort();
+  }
+
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      disposable.dispose();
+      signal?.removeEventListener('abort', abort);
+    }
+  };
+}
+
+export function disposeAll(disposables: readonly vscode.Disposable[]) {
+  for (const disposable of disposables) {
+    disposable.dispose();
+  }
+}
+
+async function throwIfNotOK(response: Response, endpoint: string) {
+  if (response.ok) {
+    return;
+  }
+
+  const body = await response.text().catch(() => '');
+  const parsed = parseErrorBody(body);
+  const detail = parsed?.error ?? body;
+  throw new OllamaAPIError(
+    `Ollama ${endpoint} failed with HTTP ${response.status}${detail ? `: ${detail}` : ''}`,
+    response.status,
+    endpoint,
+    parsed?.error,
+    parsed?.signin_url
+  );
+}
+
+function parseErrorBody(body: string): OllamaErrorResponse | undefined {
+  if (!body) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(body) as OllamaErrorResponse;
+    return typeof parsed === 'object' && parsed !== null ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function endpoint(input: RequestInfo | URL): string {
+  const url = typeof input === 'string'
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : input.url;
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url;
+  }
 }

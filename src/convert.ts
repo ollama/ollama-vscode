@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { OllamaChatMessage, OllamaTool } from './ollama';
+import { OllamaChatMessage, OllamaTool } from './provider';
 
 export function toOllamaMessages(messages: readonly vscode.LanguageModelChatRequestMessage[]): OllamaChatMessage[] {
   const converted: OllamaChatMessage[] = [];
