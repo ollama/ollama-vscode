@@ -4,6 +4,7 @@
   "description": "Ollama language model provider for VS Code.",
   "publisher": "Ollama",
   "version": "0.0.1",
+  "icon": "images/icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
