@@ -37,7 +37,7 @@ async function showCopilotByokNotice(context: vscode.ExtensionContext, output: v
 
   const openChatAction = 'Open Chat';
   const diagnoseAction = 'Diagnose Models';
-  const message = 'Ollama is installed. To use the official extension, select an Ollama model from the Chat model picker instead of the Copilot BYOK Ollama provider.';
+  const message = 'Ollama is installed. Select an Ollama model from the Chat model picker to use the official provider. The extension does not change existing Copilot BYOK settings or switch active chats.';
   const selected = await vscode.window.showInformationMessage(message, openChatAction, diagnoseAction);
 
   if (selected === openChatAction) {
