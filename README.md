@@ -48,6 +48,11 @@ Use `Diagnose Models` if models are available in Ollama but do not appear in the
 
 ## Troubleshooting
 
+If you previously configured Ollama through Copilot BYOK, choose an Ollama
+model from the Chat model picker after installing this extension. Installing the
+extension adds the official Ollama provider, but it does not automatically
+switch existing chats away from Copilot BYOK.
+
 If Ollama models do not appear:
 
 1. Make sure Ollama is running.

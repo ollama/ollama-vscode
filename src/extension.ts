@@ -4,6 +4,8 @@ import { OllamaLanguageModelProvider, createFetch, disposeAll } from './provider
 
 const defaultOllamaURL = 'http://127.0.0.1:11434';
 const ollamaVendor = 'ollama';
+const copilotByokOllamaEndpointSetting = 'github.copilot.chat.byok.ollamaEndpoint';
+const copilotByokNoticeShownKey = 'ollama.copilotByokNoticeShown';
 
 export function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel('Ollama');
@@ -18,9 +20,34 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('ollama.refreshModels', () => provider.refresh()),
     vscode.commands.registerCommand('ollama.diagnoseModels', () => diagnoseModels(output))
   );
+
+  void showCopilotByokNotice(context, output);
 }
 
 export function deactivate() {}
+
+async function showCopilotByokNotice(context: vscode.ExtensionContext, output: vscode.OutputChannel) {
+  const copilotByokEndpoint = vscode.workspace.getConfiguration().get<string>(copilotByokOllamaEndpointSetting);
+  if (!copilotByokEndpoint || context.globalState.get<boolean>(copilotByokNoticeShownKey)) {
+    return;
+  }
+
+  output.appendLine(`Detected Copilot BYOK Ollama setting: ${copilotByokOllamaEndpointSetting}.`);
+  await context.globalState.update(copilotByokNoticeShownKey, true);
+
+  const openChatAction = 'Open Chat';
+  const diagnoseAction = 'Diagnose Models';
+  const message = 'Ollama is installed. To use the official extension, select an Ollama model from the Chat model picker instead of the Copilot BYOK Ollama provider.';
+  const selected = await vscode.window.showInformationMessage(message, openChatAction, diagnoseAction);
+
+  if (selected === openChatAction) {
+    await vscode.commands.executeCommand('workbench.action.chat.open').then(undefined, error => {
+      output.appendLine(`Could not open Chat: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  } else if (selected === diagnoseAction) {
+    await diagnoseModels(output);
+  }
+}
 
 async function diagnoseModels(output: vscode.OutputChannel) {
   output.show(true);
