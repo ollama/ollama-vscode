@@ -1,5 +1,5 @@
 {
-  "name": "ollama-vscode",
+  "name": "ollama",
   "displayName": "Ollama",
   "description": "Ollama language model provider for VS Code.",
   "publisher": "Ollama",
@@ -20,13 +20,13 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onLanguageModelChatProvider:ollama-vscode"
+    "onLanguageModelChatProvider:ollama"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "languageModelChatProviders": [
       {
-        "vendor": "ollama-vscode",
+        "vendor": "ollama",
         "displayName": "Ollama",
         "configuration": {
           "type": "object",

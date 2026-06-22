@@ -25,7 +25,7 @@ VS Code can also pass provider configuration through `chatLanguageModels.json`:
 ```json
 [
   {
-    "vendor": "ollama-vscode",
+    "vendor": "ollama",
     "name": "Ollama",
     "url": "http://127.0.0.1:11434",
     "models": ["qwen3.6"],
@@ -44,13 +44,13 @@ Build the extension package:
 ```sh
 npm install
 npm run compile
-npx @vscode/vsce package --out ollama-vscode-0.0.1.vsix
+npx @vscode/vsce package --out ollama-0.0.1.vsix
 ```
 
 Install the packaged VSIX:
 
 ```sh
-code --install-extension ollama-vscode-0.0.1.vsix
+code --install-extension ollama-0.0.1.vsix
 ```
 
 You can also install a VSIX from VS Code by running `Extensions: Install from
