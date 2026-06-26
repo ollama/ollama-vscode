@@ -25,7 +25,7 @@ VS Code can also pass provider configuration through `chatLanguageModels.json`:
 ```json
 [
   {
-    "vendor": "ollama",
+    "vendor": "ollama-extension",
     "name": "Ollama",
     "url": "http://127.0.0.1:11434",
     "models": ["qwen3.6"],
