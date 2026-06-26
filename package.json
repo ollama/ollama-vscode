@@ -20,13 +20,13 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onLanguageModelChatProvider:ollama-extension"
+    "onLanguageModelChatProvider:ollama-models"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "languageModelChatProviders": [
       {
-        "vendor": "ollama-extension",
+        "vendor": "ollama-models",
         "displayName": "Ollama",
         "configuration": {
           "type": "object",
