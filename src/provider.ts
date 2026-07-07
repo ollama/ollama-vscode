@@ -360,10 +360,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function modelFamily(model: OllamaTagsModel, show: OllamaShowResponse | undefined): string {
-  return nonEmptyString(model.details?.family)
-    ?? nonEmptyString(show?.details?.family)
-    ?? nonEmptyString(model.name.split(':')[0])
-    ?? model.name;
+  const family = model.details?.family ?? show?.details?.family;
+  return typeof family === 'string' && family.length > 0
+    ? family
+    : model.name.split(':')[0] || model.name;
 }
 
 function modelTokenLimits(model: OllamaTagsModel, show: OllamaShowResponse | undefined) {
@@ -499,10 +499,6 @@ function mergedCapabilities(...sources: Array<readonly string[] | undefined>): s
     }
   }
   return [...capabilities];
-}
-
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 function isAuthError(error: unknown): error is OllamaAPIError {
