@@ -27,6 +27,7 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
 const defaultOllamaURL = 'http://127.0.0.1:11434';
 const fallbackMaxInputTokens = 32768;
 const defaultCharsPerToken = 4;
+const usageMimeType = 'usage'; // matches VS Code CustomDataPartMimeTypes.Usage
 
 export interface OllamaTagsModel {
   name: string;
@@ -205,18 +206,9 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
           ));
         }
       }
-      if (promptTokenCount !== undefined || completionTokenCount !== undefined) {
-        const prompt = promptTokenCount ?? 0;
-        const completion = completionTokenCount ?? 0;
-        progress.report(new vscode.LanguageModelDataPart(
-          new TextEncoder().encode(JSON.stringify({
-            prompt_tokens: prompt,
-            completion_tokens: completion,
-            total_tokens: prompt + completion,
-            prompt_tokens_details: { cached_tokens: 0 }
-          })),
-          'usage'
-        ));
+      const usagePart = buildUsageDataPart(promptTokenCount, completionTokenCount);
+      if (usagePart) {
+        progress.report(usagePart);
         if (promptTokenCount !== undefined) {
           this.tokenCounts.record(model.id, messages, promptTokenCount);
         }
@@ -283,7 +275,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       tooltip: name,
       version: '1.0',
       maxInputTokens,
-      maxOutputTokens: tokenLimit(model, show, 'output') ?? maxInputTokens,
+      maxOutputTokens: tokenLimit(model, show, 'output') ?? 0,
       capabilities: {
         toolCalling: hasCapability(capabilities, 'tools', 'tool'),
         imageInput: hasCapability(capabilities, 'vision', 'image')
@@ -293,6 +285,37 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       headers: configuration.headers
     };
   }
+}
+
+/**
+ * Build a `usage` data part summarising token consumption for the request.
+ *
+ * Returns `undefined` when neither a prompt nor completion token count was
+ * collected (e.g. the stream ended before reporting stats), so callers can
+ * treat an `undefined` result as "nothing to report".
+ *
+ * When a count is unknown (e.g. the prompt was fully cached and
+ * `prompt_eval_count` was omitted) the corresponding property defaults to `0`,
+ * which should be read as "unavailable", not "the model measured zero tokens".
+ */
+function buildUsageDataPart(
+  promptTokenCount: number | undefined,
+  completionTokenCount: number | undefined
+): vscode.LanguageModelDataPart | undefined {
+  if (promptTokenCount === undefined && completionTokenCount === undefined) {
+    return undefined;
+  }
+  // `0` means "unavailable", not "measured zero" — see JSDoc above.
+  const prompt = promptTokenCount ?? 0;
+  const completion = completionTokenCount ?? 0;
+  return new vscode.LanguageModelDataPart(
+    new TextEncoder().encode(JSON.stringify({
+      prompt_tokens: prompt,
+      completion_tokens: completion,
+      total_tokens: prompt + completion
+    })),
+    usageMimeType
+  );
 }
 
 function getConfiguration(options?: vscode.PrepareLanguageModelChatModelOptions): OllamaProviderConfiguration {
