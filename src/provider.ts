@@ -172,6 +172,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
 
     try {
       let promptTokenCount: number | undefined;
+      let completionTokenCount: number | undefined;
       const stream = await ollama.chat({
         model: model.model,
         messages: toOllamaMessages(messages),
@@ -187,6 +188,9 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
         if (typeof chunk.prompt_eval_count === 'number' && chunk.prompt_eval_count > 0) {
           promptTokenCount = chunk.prompt_eval_count;
         }
+        if (typeof chunk.eval_count === 'number' && chunk.eval_count > 0) {
+          completionTokenCount = chunk.eval_count;
+        }
 
         const content = response.message?.content;
         if (content) {
@@ -201,8 +205,21 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
           ));
         }
       }
-      if (promptTokenCount !== undefined) {
-        this.tokenCounts.record(model.id, messages, promptTokenCount);
+      if (promptTokenCount !== undefined || completionTokenCount !== undefined) {
+        const prompt = promptTokenCount ?? 0;
+        const completion = completionTokenCount ?? 0;
+        progress.report(new vscode.LanguageModelDataPart(
+          new TextEncoder().encode(JSON.stringify({
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+            prompt_tokens_details: { cached_tokens: 0 }
+          })),
+          'usage'
+        ));
+        if (promptTokenCount !== undefined) {
+          this.tokenCounts.record(model.id, messages, promptTokenCount);
+        }
       }
     } catch (error) {
       throw await this.handleChatError(model, error);
