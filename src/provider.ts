@@ -33,7 +33,6 @@ const defaultCharsPerToken = 4;
 export interface OllamaTagsModel {
   name: string;
   model?: string;
-  remote_model?: string;
   remote_host?: string;
   modified_at?: Date;
   size?: number;
@@ -261,16 +260,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   ): OllamaLanguageModel {
     const capabilities = mergedCapabilities(model.capabilities, show?.capabilities);
     const name = model.name;
-    const explicitMaxInputTokens = tokenLimit(model, show, 'input');
-    const contextWindow = contextWindowLimit(model, show)
-      ?? (explicitMaxInputTokens === undefined ? fallbackContextWindow : undefined);
-    const explicitMaxOutputTokens = tokenLimit(model, show, 'output');
-    const maxOutputTokens = contextWindow !== undefined
-      ? sharedOutputTokenLimit(contextWindow, explicitMaxOutputTokens)
-      : explicitMaxOutputTokens ?? defaultMaxOutputTokens;
-    const maxInputTokens = contextWindow !== undefined
-      ? contextWindow - maxOutputTokens
-      : explicitMaxInputTokens ?? fallbackContextWindow;
+    const { maxInputTokens, maxOutputTokens } = modelTokenLimits(model, show);
 
     return {
       id: name,
@@ -341,12 +331,12 @@ function shouldHydrateModel(model: OllamaTagsModel): boolean {
     return true;
   }
   return model.capabilities === undefined
-    || contextWindowLimit(model, undefined) === undefined
-    && tokenLimit(model, undefined, 'input') === undefined;
+    || (sharedContextWindow(model, undefined) === undefined
+      && explicitTokenLimit(model, undefined, 'input') === undefined);
 }
 
 function isRemoteModel(model: OllamaTagsModel): boolean {
-  return typeof model.remote_host === 'string' && model.remote_host.length > 0 || isCloudModel(model.name);
+  return typeof model.remote_host === 'string' && model.remote_host.length > 0;
 }
 
 function getConfiguredHeaders(
@@ -376,7 +366,28 @@ function modelFamily(model: OllamaTagsModel, show: OllamaShowResponse | undefine
     ?? model.name;
 }
 
-function tokenLimit(
+function modelTokenLimits(model: OllamaTagsModel, show: OllamaShowResponse | undefined) {
+  const explicitMaxInputTokens = explicitTokenLimit(model, show, 'input');
+  const explicitMaxOutputTokens = explicitTokenLimit(model, show, 'output');
+  const contextWindow = sharedContextWindow(model, show)
+    ?? (explicitMaxInputTokens === undefined ? fallbackContextWindow : undefined);
+
+  if (contextWindow === undefined) {
+    return {
+      maxInputTokens: explicitMaxInputTokens ?? fallbackContextWindow,
+      maxOutputTokens: explicitMaxOutputTokens ?? defaultMaxOutputTokens
+    };
+  }
+
+  // VS Code displays input + output; Ollama reports one shared context window.
+  const maxOutputTokens = outputTokenLimit(contextWindow, explicitMaxOutputTokens);
+  return {
+    maxInputTokens: contextWindow - maxOutputTokens,
+    maxOutputTokens
+  };
+}
+
+function explicitTokenLimit(
   model: OllamaTagsModel,
   show: OllamaShowResponse | undefined,
   kind: 'input' | 'output'
@@ -398,7 +409,7 @@ function tokenLimit(
   return undefined;
 }
 
-function contextWindowLimit(model: OllamaTagsModel, show: OllamaShowResponse | undefined): number | undefined {
+function sharedContextWindow(model: OllamaTagsModel, show: OllamaShowResponse | undefined): number | undefined {
   const keys = ['max_context_length', 'context_length'];
 
   for (const value of [
@@ -418,7 +429,7 @@ function contextWindowLimit(model: OllamaTagsModel, show: OllamaShowResponse | u
   return undefined;
 }
 
-function sharedOutputTokenLimit(contextWindow: number, configuredOutputLimit: number | undefined): number {
+function outputTokenLimit(contextWindow: number, configuredOutputLimit: number | undefined): number {
   if (contextWindow <= 1) {
     return 0;
   }
