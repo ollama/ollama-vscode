@@ -6,6 +6,7 @@ import {
   ChatResponse,
   Message,
   ModelResponse,
+  ShowRequest,
   ShowResponse,
   Tool,
   ToolCall
@@ -25,13 +26,15 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
 }
 
 const defaultOllamaURL = 'http://127.0.0.1:11434';
-const fallbackMaxInputTokens = 32768;
+const fallbackContextWindow = 32768;
+const defaultMaxOutputTokens = 4096;
 const defaultCharsPerToken = 4;
 const usageMimeType = 'usage'; // matches VS Code CustomDataPartMimeTypes.Usage
 
 export interface OllamaTagsModel {
   name: string;
   model?: string;
+  remote_host?: string;
   modified_at?: Date;
   size?: number;
   digest?: string;
@@ -144,7 +147,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       } catch (error) {
         throw this.userFacingError(error);
       }
-      const hydratedModels = await hydrateModels(ollama, models, configuration.models);
+      const hydratedModels = await hydrateModels(ollama, models);
 
       const versionSuffix = version ? ` with Ollama ${version}` : '';
       this.output?.appendLine(`Providing ${models.length} Ollama model(s) from ${configuration.url}${versionSuffix}.`);
@@ -264,9 +267,9 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     show: OllamaShowResponse | undefined,
     configuration: OllamaProviderConfiguration
   ): OllamaLanguageModel {
-    const capabilities = model.capabilities ?? show?.capabilities ?? [];
+    const capabilities = mergedCapabilities(model.capabilities, show?.capabilities);
     const name = model.name;
-    const maxInputTokens = tokenLimit(model, show, 'input') ?? fallbackMaxInputTokens;
+    const { maxInputTokens, maxOutputTokens } = modelTokenLimits(model, show);
 
     return {
       id: name,
@@ -275,7 +278,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       tooltip: name,
       version: '1.0',
       maxInputTokens,
-      maxOutputTokens: tokenLimit(model, show, 'output') ?? 0,
+      maxOutputTokens,
       capabilities: {
         toolCalling: hasCapability(capabilities, 'tools', 'tool'),
         imageInput: hasCapability(capabilities, 'vision', 'image')
@@ -344,28 +347,36 @@ function selectConfiguredModels(
 
 async function hydrateModels(
   ollama: Ollama,
-  models: readonly OllamaTagsModel[],
-  configuredModels: readonly string[]
+  models: readonly OllamaTagsModel[]
 ): Promise<Array<{ model: OllamaTagsModel; show?: OllamaShowResponse }>> {
-  const configured = new Set(configuredModels);
-  const hydrated: Array<{ model: OllamaTagsModel; show?: OllamaShowResponse }> = [];
-  for (const model of models) {
-    hydrated.push({
-      model,
-      show: configured.has(model.name) && isFallbackModel(model)
-        ? await ollama.show({ model: model.name }).then(show => show as OllamaShowResponse).catch(() => undefined)
-        : undefined
-    });
-  }
-  return hydrated;
+  return Promise.all(models.map(async model => ({
+    model,
+    show: shouldHydrateModel(model) ? await showModel(ollama, model.name) : undefined
+  })));
 }
 
 function isOllamaTagsModel(model: unknown): model is OllamaTagsModel {
   return isRecord(model) && typeof model.name === 'string' && model.name.length > 0;
 }
 
-function isFallbackModel(model: OllamaTagsModel): boolean {
-  return model.details === undefined && model.capabilities === undefined;
+async function showModel(ollama: Ollama, model: string): Promise<OllamaShowResponse | undefined> {
+  const request: ShowRequest & { verbose?: boolean } = { model, verbose: false };
+  return ollama.show(request)
+    .then(show => show as OllamaShowResponse)
+    .catch(() => undefined);
+}
+
+function shouldHydrateModel(model: OllamaTagsModel): boolean {
+  if (!isRemoteModel(model)) {
+    return true;
+  }
+  return model.capabilities === undefined
+    || (sharedContextWindow(model, undefined) === undefined
+      && explicitTokenLimit(model, undefined, 'input') === undefined);
+}
+
+function isRemoteModel(model: OllamaTagsModel): boolean {
+  return typeof model.remote_host === 'string' && model.remote_host.length > 0;
 }
 
 function getConfiguredHeaders(
@@ -395,14 +406,33 @@ function modelFamily(model: OllamaTagsModel, show: OllamaShowResponse | undefine
     : model.name.split(':')[0] || model.name;
 }
 
-function tokenLimit(
+function modelTokenLimits(model: OllamaTagsModel, show: OllamaShowResponse | undefined) {
+  const explicitMaxInputTokens = explicitTokenLimit(model, show, 'input');
+  const explicitMaxOutputTokens = explicitTokenLimit(model, show, 'output');
+  const contextWindow = sharedContextWindow(model, show)
+    ?? (explicitMaxInputTokens === undefined ? fallbackContextWindow : undefined);
+
+  if (contextWindow === undefined) {
+    return {
+      maxInputTokens: explicitMaxInputTokens ?? fallbackContextWindow,
+      maxOutputTokens: explicitMaxOutputTokens ?? defaultMaxOutputTokens
+    };
+  }
+
+  // VS Code displays input + output; Ollama reports one shared context window.
+  const maxOutputTokens = outputTokenLimit(contextWindow, explicitMaxOutputTokens);
+  return {
+    maxInputTokens: contextWindow - maxOutputTokens,
+    maxOutputTokens
+  };
+}
+
+function explicitTokenLimit(
   model: OllamaTagsModel,
   show: OllamaShowResponse | undefined,
   kind: 'input' | 'output'
 ): number | undefined {
-  const keys = kind === 'input'
-    ? ['max_input_tokens', 'max_context_length', 'context_length']
-    : ['max_output_tokens'];
+  const keys = kind === 'input' ? ['max_input_tokens'] : ['max_output_tokens'];
 
   for (const value of [
     numericField(model, keys),
@@ -417,6 +447,56 @@ function tokenLimit(
     }
   }
   return undefined;
+}
+
+function sharedContextWindow(model: OllamaTagsModel, show: OllamaShowResponse | undefined): number | undefined {
+  const keys = ['max_context_length', 'context_length'];
+
+  for (const value of [
+    numericParameterValue(show?.parameters, 'num_ctx'),
+    numericParameterValue(show?.modelfile, 'num_ctx'),
+    numericField(model, keys),
+    numericField(show, keys),
+    numericField(model.details, keys),
+    numericField(show?.details, keys),
+    numericModelInfoValue(model.model_info, keys),
+    numericModelInfoValue(show?.model_info, keys)
+  ]) {
+    if (value !== undefined && value > 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function outputTokenLimit(contextWindow: number, configuredOutputLimit: number | undefined): number {
+  if (contextWindow <= 1) {
+    return 0;
+  }
+
+  return Math.min(
+    configuredOutputLimit ?? defaultMaxOutputTokens,
+    contextWindow - 1
+  );
+}
+
+function numericParameterValue(text: string | undefined, name: string): number | undefined {
+  if (!text) {
+    return undefined;
+  }
+
+  const pattern = new RegExp(`^\\s*(?:PARAMETER\\s+)?${escapeRegExp(name)}\\s+(-?\\d+)\\b`, 'im');
+  const match = text.match(pattern);
+  if (!match) {
+    return undefined;
+  }
+
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) ? value : undefined;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function numericField(value: unknown, keys: readonly string[]): number | undefined {
@@ -449,6 +529,16 @@ function numericModelInfoValue(modelInfo: ModelInfo | undefined, keys: readonly 
 function hasCapability(capabilities: readonly string[], ...expected: string[]): boolean {
   const values = new Set(capabilities.map(capability => capability.toLowerCase()));
   return expected.some(capability => values.has(capability));
+}
+
+function mergedCapabilities(...sources: Array<readonly string[] | undefined>): string[] {
+  const capabilities = new Set<string>();
+  for (const source of sources) {
+    for (const capability of source ?? []) {
+      capabilities.add(capability);
+    }
+  }
+  return [...capabilities];
 }
 
 function isAuthError(error: unknown): error is OllamaAPIError {
