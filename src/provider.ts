@@ -309,10 +309,10 @@ async function hydrateModels(
   ollama: Ollama,
   models: readonly OllamaTagsModel[]
 ): Promise<Array<{ model: OllamaTagsModel; show?: OllamaShowResponse }>> {
-  return Promise.all(models.map(async model => ({
-    model,
-    show: shouldHydrateModel(model) ? await showModel(ollama, model.name) : undefined
-  })));
+  return Promise.all(models.map(async model => {
+    const show = shouldHydrateModel(model) ? await showModel(ollama, model.name) : undefined;
+    return show === undefined ? { model } : { model, show };
+  }));
 }
 
 function isOllamaTagsModel(model: unknown): model is OllamaTagsModel {
@@ -379,7 +379,6 @@ function modelTokenLimits(model: OllamaTagsModel, show: OllamaShowResponse | und
     };
   }
 
-  // VS Code displays input + output; Ollama reports one shared context window.
   const maxOutputTokens = outputTokenLimit(contextWindow, explicitMaxOutputTokens);
   return {
     maxInputTokens: contextWindow - maxOutputTokens,
