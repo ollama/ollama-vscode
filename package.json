@@ -91,7 +91,6 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "test": "npm run compile && tsc -p ./tsconfig.test.json && node --test .test-out/test/recommendations.test.js",
     "vscode:prepublish": "npm run compile",
     "watch": "tsc -watch -p ./"
   },

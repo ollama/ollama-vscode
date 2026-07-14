@@ -1,13 +1,13 @@
-import assert from 'node:assert/strict';
-import test from 'node:test';
-import {
+const assert = require('node:assert/strict');
+const test = require('node:test');
+const {
   builtInModelRecommendations,
   isOutdatedAgentModel,
   isRecommendedModel,
   OutdatedModelWarningTracker,
   parseModelRecommendations,
   recommendedReplacement
-} from '../src/recommendations';
+} = require('../out/recommendations');
 
 test('provides Ollama launch recommendations as a fail-open fallback', () => {
   assert.deepEqual(
