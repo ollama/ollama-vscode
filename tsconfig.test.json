@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": ".test-out",
+    "rootDir": ".",
+    "sourceMap": false
+  },
+  "include": [
+    "src/recommendations.ts",
+    "test/**/*.ts"
+  ]
+}

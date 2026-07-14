@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import {
   Ollama,
   ChatRequest,
@@ -12,6 +12,15 @@ import {
   ToolCall
 } from 'ollama';
 import { toOllamaMessages, toOllamaTools } from './convert';
+import {
+  builtInModelRecommendations,
+  isOutdatedAgentModel,
+  isRecommendedModel,
+  OutdatedModelWarningTracker,
+  type ModelRecommendation,
+  parseModelRecommendations,
+  recommendedReplacement
+} from './recommendations';
 
 interface OllamaProviderConfiguration {
   url: string;
@@ -23,6 +32,7 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
   model: string;
   url: string;
   headers: Record<string, string>;
+  recommendedReplacement?: string;
 }
 
 const defaultOllamaURL = 'http://127.0.0.1:11434';
@@ -107,6 +117,7 @@ class OllamaAPIError extends Error {
 export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProvider<OllamaLanguageModel>, vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   private readonly tokenCounts = new CalibratedTokenEstimator();
+  private readonly outdatedModelWarnings = new OutdatedModelWarningTracker();
   readonly onDidChangeLanguageModelChatInformation = this.changeEmitter.event;
 
   constructor(private readonly output?: vscode.OutputChannel) {}
@@ -126,32 +137,44 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   ): Promise<OllamaLanguageModel[]> {
     const configuration = getConfiguration(options);
     const disposables: vscode.Disposable[] = [];
+    const request = createFetch(token, disposables);
     const ollama = new Ollama({
       host: configuration.url,
       headers: configuration.headers,
-      fetch: createFetch(token, disposables)
+      fetch: request
     });
     const version = await ollama.version()
       .then(response => response.version)
       .catch(() => undefined);
 
     try {
-      let models: OllamaTagsModel[];
       try {
         const body = await ollama.list();
         const availableModels = ((body.models ?? []) as unknown[]).filter(isOllamaTagsModel);
-        models = configuration.models.length > 0
+        const recommendations = await fetchModelRecommendations(configuration, request, this.output);
+        const models = configuration.models.length > 0
           ? selectConfiguredModels(configuration.models, availableModels)
           : availableModels;
+
+        const hydratedModels = await hydrateModels(ollama, models);
+        const versionSuffix = version ? ` with Ollama ${version}` : '';
+        const recommendationSuffix = recommendations.length > 0
+          ? ` using ${recommendations.length} recommendation(s)`
+          : '';
+        this.output?.appendLine(
+          `Providing ${models.length} Ollama model(s) from ${configuration.url}${versionSuffix}${recommendationSuffix}.`
+        );
+
+        return hydratedModels.map(({ model, show }) => this.toLanguageModel(
+          model,
+          show,
+          configuration,
+          recommendedReplacement(model.name, availableModels, recommendations),
+          isRecommendedModel(model.name, recommendations)
+        ));
       } catch (error) {
         throw this.userFacingError(error);
       }
-      const hydratedModels = await hydrateModels(ollama, models);
-
-      const versionSuffix = version ? ` with Ollama ${version}` : '';
-      this.output?.appendLine(`Providing ${models.length} Ollama model(s) from ${configuration.url}${versionSuffix}.`);
-
-      return hydratedModels.map(({ model, show }) => this.toLanguageModel(model, show, configuration));
     } finally {
       disposeAll(disposables);
     }
@@ -164,6 +187,11 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken
   ): Promise<void> {
+    if (!await this.confirmOutdatedModelUse(model, messages, token)) {
+      this.output?.appendLine(`Cancelled chat request to ${model.model} before sending.`);
+      throw new vscode.CancellationError();
+    }
+
     const disposables: vscode.Disposable[] = [];
     const ollama = new Ollama({
       host: model.url,
@@ -253,10 +281,66 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     return error instanceof Error ? error : new Error(String(error));
   }
 
+  private async confirmOutdatedModelUse(
+    model: OllamaLanguageModel,
+    messages: readonly vscode.LanguageModelChatRequestMessage[],
+    token: vscode.CancellationToken
+  ): Promise<boolean> {
+    if (!isOutdatedAgentModel(model.model)) {
+      return true;
+    }
+    const chatKey = initialChatHistoryKey(messages);
+    const hasAssistantResponse = messages.some(
+      message => message.role === vscode.LanguageModelChatMessageRole.Assistant
+    );
+    if (!chatKey || (hasAssistantResponse && this.outdatedModelWarnings.hasShown(chatKey, model.model))) {
+      return true;
+    }
+
+    const replacement = model.recommendedReplacement;
+    const guidance = replacement
+      ? ` We recommend ${replacement} for stronger coding and tool use.`
+      : ' We recommend choosing a newer model for stronger coding and tool use.';
+    const chooseAnotherModel = 'Choose another model';
+    const continueAnyway = 'Continue anyway';
+    const outcome = await showWarningMessageUntilCancelled(
+      `${model.model} may not work as reliably with VS Code agent tools.${guidance}`,
+      [chooseAnotherModel, continueAnyway],
+      token
+    );
+    if (outcome.kind === 'cancelled') {
+      return false;
+    }
+    if (outcome.kind === 'error') {
+      this.output?.appendLine(`Could not show model recommendation guidance: ${formatError(outcome.error)}`);
+      return false;
+    }
+    this.outdatedModelWarnings.markShown(chatKey, model.model);
+    const selected = outcome.selected;
+
+    if (selected === chooseAnotherModel) {
+      try {
+        await vscode.commands.executeCommand('workbench.action.chat.openModelPicker');
+      } catch (error) {
+        this.output?.appendLine(`Could not open the model picker: ${formatError(error)}`);
+        try {
+          await vscode.commands.executeCommand('workbench.action.chat.manage');
+        } catch (fallbackError) {
+          this.output?.appendLine(`Could not open model management: ${formatError(fallbackError)}`);
+        }
+      }
+      return false;
+    }
+
+    return selected === continueAnyway || selected === undefined;
+  }
+
   private toLanguageModel(
     model: OllamaTagsModel,
     show: OllamaShowResponse | undefined,
-    configuration: OllamaProviderConfiguration
+    configuration: OllamaProviderConfiguration,
+    replacement: string | undefined,
+    recommended: boolean
   ): OllamaLanguageModel {
     const capabilities = mergedCapabilities(model.capabilities, show?.capabilities);
     const name = model.name;
@@ -266,7 +350,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       id: name,
       name,
       family: modelFamily(model, show),
-      tooltip: name,
+      tooltip: recommended ? 'Recommended' : name,
       version: '1.0',
       maxInputTokens,
       maxOutputTokens,
@@ -276,8 +360,88 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       },
       model: name,
       url: configuration.url,
-      headers: configuration.headers
+      headers: configuration.headers,
+      recommendedReplacement: replacement
     };
+  }
+}
+
+function initialChatHistoryKey(
+  messages: readonly vscode.LanguageModelChatRequestMessage[]
+): string | undefined {
+  const assistantIndex = messages.findIndex(
+    message => message.role === vscode.LanguageModelChatMessageRole.Assistant
+  );
+  const initialMessages = assistantIndex >= 0 ? messages.slice(0, assistantIndex) : messages;
+  if (initialMessages.length === 0) {
+    return undefined;
+  }
+  return createHash('sha256')
+    .update(JSON.stringify(toOllamaMessages(initialMessages)))
+    .digest('hex');
+}
+
+type WarningMessageOutcome<T extends string> =
+  | { kind: 'selection'; selected: T | undefined }
+  | { kind: 'cancelled' }
+  | { kind: 'error'; error: unknown };
+
+async function showWarningMessageUntilCancelled<T extends string>(
+  message: string,
+  actions: readonly T[],
+  token: vscode.CancellationToken
+): Promise<WarningMessageOutcome<T>> {
+  if (token.isCancellationRequested) {
+    return { kind: 'cancelled' };
+  }
+
+  return new Promise(resolve => {
+    let settled = false;
+    let cancellation: vscode.Disposable | undefined;
+    const finish = (outcome: WarningMessageOutcome<T>) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cancellation?.dispose();
+      resolve(outcome);
+    };
+    cancellation = token.onCancellationRequested(() => finish({ kind: 'cancelled' }));
+    if (settled) {
+      cancellation.dispose();
+    }
+    void vscode.window.showWarningMessage(message, ...actions).then(
+      selected => finish({ kind: 'selection', selected }),
+      error => finish({ kind: 'error', error })
+    );
+  });
+}
+
+async function fetchModelRecommendations(
+  configuration: OllamaProviderConfiguration,
+  request: typeof fetch,
+  output: vscode.OutputChannel | undefined
+): Promise<ModelRecommendation[]> {
+  try {
+    const baseURL = configuration.url.endsWith('/') ? configuration.url : `${configuration.url}/`;
+    const url = new URL('api/experimental/model-recommendations', baseURL);
+    const headers = new Headers(configuration.headers);
+    if (!headers.has('accept')) {
+      headers.set('accept', 'application/json');
+    }
+    const response = await request(url, { method: 'GET', headers });
+    const recommendations = parseModelRecommendations(await response.json());
+    if (recommendations.length === 0) {
+      output?.appendLine(`Ollama returned no model recommendations from ${url}; using built-in recommendations.`);
+      return [...builtInModelRecommendations];
+    }
+    return recommendations;
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
+    output?.appendLine(`Model recommendations are unavailable; using built-in recommendations: ${formatError(error)}`);
+    return [...builtInModelRecommendations];
   }
 }
 
@@ -503,6 +667,13 @@ function mergedCapabilities(...sources: Array<readonly string[] | undefined>): s
 
 function isAuthError(error: unknown): error is OllamaAPIError {
   return error instanceof OllamaAPIError && error.status === 401;
+}
+
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'name' in error
+    && error.name === 'AbortError';
 }
 
 function isCloudModel(model: string): boolean {
