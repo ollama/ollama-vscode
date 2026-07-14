@@ -2,17 +2,6 @@ export interface ModelRecommendation {
   model: string;
 }
 
-// Keep this fallback aligned with Ollama's built-in launch recommendations.
-// Server recommendations remain the source of truth when they are available.
-export const builtInModelRecommendations: readonly ModelRecommendation[] = [
-  { model: 'kimi-k2.6:cloud' },
-  { model: 'qwen3.5:cloud' },
-  { model: 'glm-5.1:cloud' },
-  { model: 'minimax-m2.7:cloud' },
-  { model: 'gemma4:12b' },
-  { model: 'qwen3.5' }
-];
-
 export interface OutdatedModelWarningRequest {
   readonly conversationID: number;
 }

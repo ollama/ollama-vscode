@@ -1,31 +1,12 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
-  builtInModelRecommendations,
   isOutdatedAgentModel,
   isRecommendedModel,
   OutdatedModelWarningTracker,
   parseModelRecommendations,
   recommendedReplacement
 } = require('../out/recommendations');
-
-test('provides Ollama launch recommendations as a fail-open fallback', () => {
-  assert.deepEqual(
-    builtInModelRecommendations.map(recommendation => recommendation.model),
-    [
-      'kimi-k2.6:cloud',
-      'qwen3.5:cloud',
-      'glm-5.1:cloud',
-      'minimax-m2.7:cloud',
-      'gemma4:12b',
-      'qwen3.5'
-    ]
-  );
-  assert.equal(
-    builtInModelRecommendations.some(recommendation => isOutdatedAgentModel(recommendation.model)),
-    false
-  );
-});
 
 test('parses valid recommendations and ignores invalid or duplicate entries', () => {
   assert.deepEqual(parseModelRecommendations({ recommendations: [

@@ -13,7 +13,6 @@ import {
 } from 'ollama';
 import { toOllamaMessages, toOllamaTools } from './convert';
 import {
-  builtInModelRecommendations,
   isOutdatedAgentModel,
   isRecommendedModel,
   OutdatedModelWarningTracker,
@@ -446,8 +445,8 @@ async function fetchModelRecommendations(
     const response = await request(url, { method: 'GET', headers, signal: controller.signal });
     const recommendations = parseModelRecommendations(await response.json());
     if (recommendations.length === 0) {
-      output?.appendLine(`Ollama returned no model recommendations from ${url}; using built-in recommendations.`);
-      return [...builtInModelRecommendations];
+      output?.appendLine(`Ollama returned no model recommendations from ${url}.`);
+      return [];
     }
     return recommendations;
   } catch (error) {
@@ -457,8 +456,8 @@ async function fetchModelRecommendations(
     const reason = timedOut
       ? `request timed out after ${recommendationTimeoutMS}ms`
       : formatError(error);
-    output?.appendLine(`Model recommendations are unavailable; using built-in recommendations: ${reason}`);
-    return [...builtInModelRecommendations];
+    output?.appendLine(`Model recommendations are unavailable; continuing without them: ${reason}`);
+    return [];
   } finally {
     clearTimeout(timer);
   }
