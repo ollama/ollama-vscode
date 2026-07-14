@@ -71,7 +71,7 @@ export function parseModelRecommendations(payload: unknown): ModelRecommendation
     if (!isRecord(item) || typeof item.model !== 'string') {
       continue;
     }
-    const model = item.model.trim();
+    const model = pinnedRecommendationModel(item.model);
     const key = recommendationKey(model);
     if (!model || seen.has(key)) {
       continue;
@@ -97,18 +97,14 @@ export function recommendedReplacement<T extends { name: string }>(
 ): string | undefined {
   const available = new Map(availableModels.map(model => [recommendationKey(model.name), model.name]));
   const currentKey = recommendationKey(currentModel);
-  const candidates = recommendations
-    .filter(recommendation => recommendationKey(recommendation.model) !== currentKey)
-    .map(recommendation => ({
-      recommendation,
-      availableName: available.get(recommendationKey(recommendation.model))
-    }))
-    .filter((candidate): candidate is { recommendation: ModelRecommendation; availableName: string } =>
-      candidate.availableName !== undefined);
-
-  return candidates.find(candidate =>
-    isCloudModel(candidate.availableName) === isCloudModel(currentModel)
-  )?.availableName;
+  const recommendation = recommendations.find(candidate =>
+    recommendationKey(candidate.model) !== currentKey &&
+    isCloudModel(candidate.model) === isCloudModel(currentModel)
+  );
+  if (!recommendation) {
+    return undefined;
+  }
+  return available.get(recommendationKey(recommendation.model)) ?? recommendation.model;
 }
 
 export function isOutdatedAgentModel(name: string): boolean {
@@ -122,6 +118,15 @@ export function isOutdatedAgentModel(name: string): boolean {
 function recommendationKey(name: string): string {
   const normalized = name.trim().toLowerCase();
   return normalized.endsWith(':latest') ? normalized.slice(0, -':latest'.length) : normalized;
+}
+
+function pinnedRecommendationModel(name: string): string {
+  const model = name.trim();
+  const normalized = model.toLowerCase();
+  if (normalized === 'gemma4' || normalized === 'gemma4:latest') {
+    return 'gemma4:12b';
+  }
+  return model;
 }
 
 function warningModelKey(name: string): string {

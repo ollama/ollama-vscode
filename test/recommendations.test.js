@@ -31,11 +31,14 @@ test('parses valid recommendations and ignores invalid or duplicate entries', ()
   assert.deepEqual(parseModelRecommendations({ recommendations: [
     { model: ' qwen3.6 ', description: ' Coding locally ' },
     { model: 'qwen3.6:latest', description: 'duplicate alias' },
+    { model: 'gemma4', description: 'pin the recommended size' },
+    { model: 'gemma4:latest', description: 'duplicate pinned alias' },
     { model: '' },
     { description: 'missing model' },
     null
   ] }), [
-    { model: 'qwen3.6' }
+    { model: 'qwen3.6' },
+    { model: 'gemma4:12b' }
   ]);
   assert.deepEqual(parseModelRecommendations({}), []);
 });
@@ -62,6 +65,25 @@ test('chooses an installed replacement with the same local or cloud source', () 
 
   assert.equal(recommendedReplacement('qwen2.5-coder:7b', models, recommendations), 'qwen3.6:latest');
   assert.equal(recommendedReplacement('llama3.2:cloud', models, recommendations), 'glm-5.2:cloud');
+});
+
+test('shows a pinned Gemma 4 recommendation even before it is installed', () => {
+  const recommendations = parseModelRecommendations({
+    recommendations: [{ model: 'gemma4' }]
+  });
+
+  assert.equal(
+    recommendedReplacement(
+      'llama3.1:latest',
+      [{ name: 'gemma4:latest' }, { name: 'gemma4:12b' }],
+      recommendations
+    ),
+    'gemma4:12b'
+  );
+  assert.equal(
+    recommendedReplacement('llama3.1:latest', [{ name: 'gemma4:latest' }], recommendations),
+    'gemma4:12b'
+  );
 });
 
 test('does not recommend a replacement from a different source', () => {
