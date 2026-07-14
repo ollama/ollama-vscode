@@ -3,6 +3,7 @@ import { OllamaChatMessage, OllamaTool } from './provider';
 
 export function toOllamaMessages(messages: readonly vscode.LanguageModelChatRequestMessage[]): OllamaChatMessage[] {
   const converted: OllamaChatMessage[] = [];
+  const toolNamesByCallId = new Map<string, string>();
 
   for (const message of messages) {
     const text: string[] = [];
@@ -20,6 +21,7 @@ export function toOllamaMessages(messages: readonly vscode.LanguageModelChatRequ
           text.push(new TextDecoder().decode(part.data));
         }
       } else if (part instanceof vscode.LanguageModelToolCallPart) {
+        toolNamesByCallId.set(part.callId, part.name);
         toolCalls.push({
           id: part.callId,
           function: {
@@ -31,7 +33,7 @@ export function toOllamaMessages(messages: readonly vscode.LanguageModelChatRequ
         toolResults.push({
           role: 'tool',
           content: toolResultContent(part),
-          tool_call_id: part.callId
+          tool_name: toolNamesByCallId.get(part.callId)
         });
       }
     }
@@ -76,13 +78,13 @@ function roleToOllama(role: vscode.LanguageModelChatMessageRole): string {
 }
 
 function toolResultContent(part: vscode.LanguageModelToolResultPart): string {
-  return part.content.map(item => {
+  return part.content.flatMap(item => {
     if (item instanceof vscode.LanguageModelTextPart) {
-      return item.value;
+      return [item.value];
     }
     if (item instanceof vscode.LanguageModelDataPart && item.mimeType.startsWith('text/')) {
-      return new TextDecoder().decode(item.data);
+      return [new TextDecoder().decode(item.data)];
     }
-    return JSON.stringify(item);
+    return [];
   }).join('\n');
 }

@@ -59,7 +59,7 @@ type ModelInfo = Record<string, unknown> | Map<string, unknown>;
 export interface OllamaChatMessage extends Message {
   images?: string[];
   tool_calls?: OllamaToolCall[];
-  tool_call_id?: string;
+  tool_name?: string;
 }
 
 export interface OllamaTool extends Tool {
@@ -175,9 +175,13 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
 
     try {
       let promptTokenCount: number | undefined;
+      const contentBuffer: string[] = [];
+      let bufferingContent = tools.length > 0;
+      let reportedToolCall = false;
+      const requestMessages = toOllamaMessages(messages);
       const stream = await ollama.chat({
         model: model.model,
-        messages: toOllamaMessages(messages),
+        messages: requestMessages,
         stream: true,
         tools: tools.length > 0 ? tools : undefined,
         options: options.modelOptions ? { ...options.modelOptions } : undefined
@@ -193,15 +197,32 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
 
         const content = response.message?.content;
         if (content) {
-          progress.report(new vscode.LanguageModelTextPart(content));
+          if (bufferingContent && !reportedToolCall) {
+            contentBuffer.push(content);
+            if (!couldBeTextToolCall(contentBuffer.join(''))) {
+              progress.report(new vscode.LanguageModelTextPart(contentBuffer.join('')));
+              contentBuffer.length = 0;
+              bufferingContent = false;
+            }
+          } else {
+            progress.report(new vscode.LanguageModelTextPart(content));
+          }
         }
 
         for (const toolCall of response.message?.tool_calls ?? []) {
-          progress.report(new vscode.LanguageModelToolCallPart(
-            toolCall.id ?? randomUUID(),
-            toolCall.function.name,
-            toolCall.function.arguments
-          ));
+          reportedToolCall = true;
+          progress.report(toolCallPart(toolCall));
+        }
+      }
+      if (contentBuffer.length > 0) {
+        const content = contentBuffer.join('');
+        const toolCalls = reportedToolCall ? undefined : parseTextToolCalls(content, tools);
+        if (toolCalls) {
+          for (const toolCall of toolCalls) {
+            progress.report(toolCallPart(toolCall));
+          }
+        } else {
+          progress.report(new vscode.LanguageModelTextPart(content));
         }
       }
       if (promptTokenCount !== undefined) {
@@ -357,6 +378,90 @@ function getConfiguredHeaders(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function toolCallPart(toolCall: OllamaToolCall): vscode.LanguageModelToolCallPart {
+  return new vscode.LanguageModelToolCallPart(
+    toolCall.id ?? randomUUID(),
+    toolCall.function.name,
+    toolCall.function.arguments
+  );
+}
+
+function parseTextToolCalls(content: string, tools: readonly OllamaTool[]): OllamaToolCall[] | undefined {
+  const parsed = parseJSON(stripCodeFence(content));
+  if (parsed === undefined) {
+    return undefined;
+  }
+
+  const toolNames = new Set(tools.map(tool => tool.function.name).filter((name): name is string => typeof name === 'string'));
+  const candidates = Array.isArray(parsed)
+    ? parsed
+    : isRecord(parsed) && Array.isArray(parsed.tool_calls)
+      ? parsed.tool_calls
+      : [parsed];
+  const toolCalls = candidates
+    .map(candidate => textToolCall(candidate, toolNames))
+    .filter((toolCall): toolCall is OllamaToolCall => toolCall !== undefined);
+
+  return toolCalls.length === candidates.length && toolCalls.length > 0 ? toolCalls : undefined;
+}
+
+function textToolCall(value: unknown, toolNames: ReadonlySet<string>): OllamaToolCall | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const id = typeof value.id === 'string' ? value.id : undefined;
+  const source = isRecord(value.function) ? value.function : value;
+  const name = typeof source.name === 'string' ? source.name : undefined;
+  const input = parseToolArguments(source.arguments);
+
+  if (!name || !toolNames.has(name) || input === undefined) {
+    return undefined;
+  }
+
+  return {
+    id,
+    function: {
+      name,
+      arguments: input
+    }
+  };
+}
+
+function parseToolArguments(value: unknown): Record<string, unknown> | undefined {
+  if (isRecord(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = parseJSON(value);
+    return isRecord(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function parseJSON(value: string): Record<string, unknown> | unknown[] | undefined {
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) || Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function stripCodeFence(value: string): string {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return match ? match[1].trim() : trimmed;
+}
+
+function couldBeTextToolCall(value: string): boolean {
+  const trimmed = value.trimStart().toLowerCase();
+  if (trimmed.length === 0) {
+    return true;
+  }
+  return ['{', '[', '```'].some(prefix => prefix.startsWith(trimmed) || trimmed.startsWith(prefix));
 }
 
 function modelFamily(model: OllamaTagsModel, show: OllamaShowResponse | undefined): string {
