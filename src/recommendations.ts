@@ -13,29 +13,95 @@ export const builtInModelRecommendations: readonly ModelRecommendation[] = [
   { model: 'qwen3.5' }
 ];
 
+export interface OutdatedModelWarningRequest {
+  readonly conversationID: number;
+}
+
+interface OutdatedModelWarningConversation {
+  readonly id: number;
+  history: readonly string[];
+  readonly warnedModels: Set<string>;
+  lastRequestSucceeded: boolean;
+}
+
 export class OutdatedModelWarningTracker {
-  private readonly warnedModelsByChat = new Map<string, Set<string>>();
+  private readonly conversations = new Map<number, OutdatedModelWarningConversation>();
+  private nextConversationID = 1;
 
   constructor(private readonly maxChats = 100) {}
 
-  hasShown(chatKey: string, model: string): boolean {
-    return this.warnedModelsByChat.get(chatKey)?.has(warningModelKey(model)) ?? false;
-  }
+  beginRequest(
+    history: readonly string[],
+    hasAssistantResponse: boolean
+  ): OutdatedModelWarningRequest {
+    // The VS Code provider API has no chat ID. Treat a successful, assistant-free
+    // exact history as a new chat, but keep failed retries and growing histories
+    // attached to their existing conversation state.
+    const recentConversations = [...this.conversations.values()].reverse();
+    const exact = recentConversations.find(conversation => historiesEqual(conversation.history, history));
+    let conversation = exact
+      ? (hasAssistantResponse || !exact.lastRequestSucceeded ? exact : undefined)
+      : (hasAssistantResponse ? longestHistoryPrefix(recentConversations, history) : undefined);
 
-  markShown(chatKey: string, model: string): void {
-    let warnedModels = this.warnedModelsByChat.get(chatKey);
-    if (!warnedModels) {
-      if (this.warnedModelsByChat.size >= this.maxChats) {
-        const oldestChat = this.warnedModelsByChat.keys().next().value;
-        if (oldestChat !== undefined) {
-          this.warnedModelsByChat.delete(oldestChat);
+    if (!conversation) {
+      if (this.conversations.size >= this.maxChats) {
+        const oldestConversationID = this.conversations.keys().next().value;
+        if (oldestConversationID !== undefined) {
+          this.conversations.delete(oldestConversationID);
         }
       }
-      warnedModels = new Set<string>();
-      this.warnedModelsByChat.set(chatKey, warnedModels);
+      conversation = {
+        id: this.nextConversationID++,
+        history: [],
+        warnedModels: new Set<string>(),
+        lastRequestSucceeded: false
+      };
+    } else {
+      this.conversations.delete(conversation.id);
     }
-    warnedModels.add(warningModelKey(model));
+
+    conversation.history = [...history];
+    conversation.lastRequestSucceeded = false;
+    this.conversations.set(conversation.id, conversation);
+    return { conversationID: conversation.id };
   }
+
+  hasShown(request: OutdatedModelWarningRequest, model: string): boolean {
+    return this.conversations.get(request.conversationID)?.warnedModels.has(warningModelKey(model)) ?? false;
+  }
+
+  markShown(request: OutdatedModelWarningRequest, model: string): void {
+    this.conversations.get(request.conversationID)?.warnedModels.add(warningModelKey(model));
+  }
+
+  finishRequest(request: OutdatedModelWarningRequest, succeeded: boolean): void {
+    const conversation = this.conversations.get(request.conversationID);
+    if (conversation) {
+      conversation.lastRequestSucceeded = succeeded;
+    }
+  }
+}
+
+function historiesEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((message, index) => message === right[index]);
+}
+
+function longestHistoryPrefix(
+  conversations: readonly OutdatedModelWarningConversation[],
+  history: readonly string[]
+): OutdatedModelWarningConversation | undefined {
+  let match: OutdatedModelWarningConversation | undefined;
+  for (const conversation of conversations) {
+    if (
+      conversation.history.length > 0 &&
+      conversation.history.length < history.length &&
+      conversation.history.every((message, index) => message === history[index]) &&
+      (!match || conversation.history.length > match.history.length)
+    ) {
+      match = conversation;
+    }
+  }
+  return match;
 }
 
 const outdatedAgentModelFamilies = new Set([

@@ -129,12 +129,53 @@ test('classifies only the agreed outdated agent model families and tags', () => 
   }
 });
 
-test('tracks each outdated model independently within a chat', () => {
+test('tracks each outdated model independently as a conversation grows', () => {
   const tracker = new OutdatedModelWarningTracker();
+  const firstTurn = tracker.beginRequest(['user: fix this'], false);
 
-  assert.equal(tracker.hasShown('chat-a', 'qwen2.5-coder:7b'), false);
-  tracker.markShown('chat-a', 'qwen2.5-coder:7b');
-  assert.equal(tracker.hasShown('chat-a', 'QWEN2.5-CODER:7B'), true);
-  assert.equal(tracker.hasShown('chat-a', 'llama3.2:latest'), false);
-  assert.equal(tracker.hasShown('chat-b', 'qwen2.5-coder:7b'), false);
+  assert.equal(tracker.hasShown(firstTurn, 'qwen2.5-coder:7b'), false);
+  tracker.markShown(firstTurn, 'qwen2.5-coder:7b');
+  tracker.finishRequest(firstTurn, true);
+
+  const nextTurn = tracker.beginRequest(
+    ['user: fix this', 'assistant: done', 'user: one more change'],
+    true
+  );
+  assert.equal(tracker.hasShown(nextTurn, 'QWEN2.5-CODER:7B'), true);
+  assert.equal(tracker.hasShown(nextTurn, 'llama3.2:latest'), false);
+});
+
+test('does not repeat a warning when the first request is retried after failure', () => {
+  const tracker = new OutdatedModelWarningTracker();
+  const firstAttempt = tracker.beginRequest(['user: fix this'], false);
+  tracker.markShown(firstAttempt, 'qwen2.5-coder:7b');
+  tracker.finishRequest(firstAttempt, false);
+
+  const retry = tracker.beginRequest(['user: fix this'], false);
+  assert.equal(tracker.hasShown(retry, 'qwen2.5-coder:7b'), true);
+});
+
+test('keeps warning state separate for new chats with the same first prompt', () => {
+  const tracker = new OutdatedModelWarningTracker();
+  const firstChat = tracker.beginRequest(['user: fix this'], false);
+  tracker.markShown(firstChat, 'qwen2.5-coder:7b');
+  tracker.finishRequest(firstChat, true);
+
+  const secondChat = tracker.beginRequest(['user: fix this'], false);
+  assert.equal(tracker.hasShown(secondChat, 'qwen2.5-coder:7b'), false);
+});
+
+test('warns after switching from a current model in a new chat with a repeated prompt', () => {
+  const tracker = new OutdatedModelWarningTracker();
+  const firstChat = tracker.beginRequest(['user: fix this'], false);
+  tracker.markShown(firstChat, 'qwen2.5-coder:7b');
+  tracker.finishRequest(firstChat, true);
+
+  const secondChat = tracker.beginRequest(['user: fix this'], false);
+  tracker.finishRequest(secondChat, true);
+  const switchedModel = tracker.beginRequest(
+    ['user: fix this', 'assistant: a different response'],
+    true
+  );
+  assert.equal(tracker.hasShown(switchedModel, 'qwen2.5-coder:7b'), false);
 });
