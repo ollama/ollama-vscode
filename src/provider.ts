@@ -255,9 +255,9 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       const usagePart = buildUsageDataPart(promptTokenCount, completionTokenCount);
       if (usagePart) {
         progress.report(usagePart);
-        if (promptTokenCount !== undefined) {
-          this.tokenCounts.record(model.id, messages, promptTokenCount);
-        }
+      }
+      if (promptTokenCount !== undefined) {
+        this.tokenCounts.record(model.id, messages, promptTokenCount);
       }
       requestSucceeded = true;
     } catch (error) {
