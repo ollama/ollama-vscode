@@ -76,13 +76,24 @@ function roleToOllama(role: vscode.LanguageModelChatMessageRole): string {
 }
 
 function toolResultContent(part: vscode.LanguageModelToolResultPart): string {
-  return part.content.map(item => {
+  const content: string[] = [];
+
+  for (const item of part.content) {
     if (item instanceof vscode.LanguageModelTextPart) {
-      return item.value;
+      content.push(item.value);
+      continue;
     }
-    if (item instanceof vscode.LanguageModelDataPart && item.mimeType.startsWith('text/')) {
-      return new TextDecoder().decode(item.data);
+    if (item instanceof vscode.LanguageModelDataPart) {
+      if (item.mimeType === 'cache_control') {
+        continue;
+      }
+      if (item.mimeType.startsWith('text/')) {
+        content.push(new TextDecoder().decode(item.data));
+        continue;
+      }
     }
-    return JSON.stringify(item);
-  }).join('\n');
+    content.push(JSON.stringify(item));
+  }
+
+  return content.join('\n');
 }

@@ -91,6 +91,7 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
+    "test": "npm run compile && node --test",
     "vscode:prepublish": "npm run compile",
     "watch": "tsc -watch -p ./"
   },
