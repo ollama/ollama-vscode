@@ -359,7 +359,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     const name = model.name;
     const { maxInputTokens, maxOutputTokens } = modelTokenLimits(model, show);
 
-    return {
+    const languageModel: OllamaLanguageModel = {
       id: name,
       name,
       family: modelFamily(model, show),
@@ -373,9 +373,12 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       },
       model: name,
       url: configuration.url,
-      headers: configuration.headers,
-      recommendedReplacement: replacement
+      headers: configuration.headers
     };
+    if (replacement !== undefined) {
+      languageModel.recommendedReplacement = replacement;
+    }
+    return languageModel;
   }
 }
 
@@ -491,10 +494,10 @@ async function hydrateModels(
   ollama: Ollama,
   models: readonly OllamaTagsModel[]
 ): Promise<Array<{ model: OllamaTagsModel; show?: OllamaShowResponse }>> {
-  return Promise.all(models.map(async model => ({
-    model,
-    show: shouldHydrateModel(model) ? await showModel(ollama, model.name) : undefined
-  })));
+  return Promise.all(models.map(async model => {
+    const show = shouldHydrateModel(model) ? await showModel(ollama, model.name) : undefined;
+    return show === undefined ? { model } : { model, show };
+  }));
 }
 
 function isOllamaTagsModel(model: unknown): model is OllamaTagsModel {

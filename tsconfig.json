@@ -10,6 +10,7 @@
     "outDir": "out",
     "rootDir": "src",
     "strict": true,
+    "types": ["node"],
     "esModuleInterop": true,
     "sourceMap": true,
     "skipLibCheck": true
