@@ -10,7 +10,9 @@ interface ChatFetch {
   dispose(): void;
 }
 
-export function createChatFetch(headersTimeout = 0): ChatFetch {
+const CHAT_HEADERS_TIMEOUT = 10 * 60 * 1000;
+
+export function createChatFetch(headersTimeout = CHAT_HEADERS_TIMEOUT): ChatFetch {
   const dispatcher = new Agent({
     headersTimeout
   });

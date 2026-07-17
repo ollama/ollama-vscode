@@ -21,7 +21,7 @@ try {
   Module._load = originalLoad;
 }
 
-test('waits for delayed response headers', async () => {
+test('waits for delayed response headers within the chat timeout', async () => {
   await withServer((request, response) => {
     request.resume();
     setTimeout(() => {
@@ -42,7 +42,7 @@ test('waits for delayed response headers', async () => {
   });
 });
 
-test('supports a finite response header timeout for the test control', async () => {
+test('enforces a finite response header timeout', async () => {
   await withServer((request, response) => {
     request.resume();
     setTimeout(() => response.end('too late'), 1500);
