@@ -21,6 +21,7 @@ import {
   parseModelRecommendations,
   recommendedReplacement
 } from './recommendations';
+import { createChatFetch } from './chatFetch';
 
 interface OllamaProviderConfiguration {
   url: string;
@@ -208,10 +209,12 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     }
 
     const disposables: vscode.Disposable[] = [];
+    const chatFetch = createChatFetch();
+    disposables.push(chatFetch);
     const ollama = new Ollama({
       host: model.url,
       headers: model.headers,
-      fetch: createFetch(token, disposables)
+      fetch: createFetch(token, disposables, chatFetch.fetch)
     });
     const tools = toOllamaTools(options.tools);
     this.output?.appendLine(`Sending chat request to ${model.model} at ${model.url}.`);
@@ -774,11 +777,15 @@ function inputToText(input: string | vscode.LanguageModelChatRequestMessage): st
   return typeof input === 'string' ? input : input.content.map(partToText).join('\n');
 }
 
-export function createFetch(token: vscode.CancellationToken, disposables: vscode.Disposable[]): typeof fetch {
+export function createFetch(
+  token: vscode.CancellationToken,
+  disposables: vscode.Disposable[],
+  request: typeof fetch = fetch
+): typeof fetch {
   return async (input, init) => {
     const linkedSignal = abortSignal(token, init?.signal);
     disposables.push(linkedSignal);
-    const response = await fetch(input, {
+    const response = await request(input, {
       ...init,
       signal: linkedSignal.signal
     });
