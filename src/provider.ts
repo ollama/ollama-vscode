@@ -40,6 +40,7 @@ const recommendationTimeoutMS = 2000;
 const fallbackContextWindow = 32768;
 const defaultMaxOutputTokens = 4096;
 const defaultCharsPerToken = 4;
+const usageMimeType = 'usage'; // matches VS Code CustomDataPartMimeTypes.Usage
 
 export interface OllamaTagsModel {
   name: string;
@@ -218,6 +219,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
 
     try {
       let promptTokenCount: number | undefined;
+      let completionTokenCount: number | undefined;
       const stream = await ollama.chat({
         model: model.model,
         messages: ollamaMessages,
@@ -230,8 +232,11 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
 
       for await (const chunk of stream as AsyncIterable<ChatResponse>) {
         const response = chunk as OllamaChatResponse;
-        if (typeof chunk.prompt_eval_count === 'number' && chunk.prompt_eval_count > 0) {
+        if (typeof chunk.prompt_eval_count === 'number' && chunk.prompt_eval_count >= 0) {
           promptTokenCount = chunk.prompt_eval_count;
+        }
+        if (typeof chunk.eval_count === 'number' && chunk.eval_count >= 0) {
+          completionTokenCount = chunk.eval_count;
         }
 
         const content = response.message?.content;
@@ -246,6 +251,10 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
             toolCall.function.arguments
           ));
         }
+      }
+      const usagePart = buildUsageDataPart(promptTokenCount, completionTokenCount);
+      if (usagePart) {
+        progress.report(usagePart);
       }
       if (promptTokenCount !== undefined) {
         this.tokenCounts.record(model.id, messages, promptTokenCount);
@@ -377,6 +386,30 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       recommendedReplacement: replacement
     };
   }
+}
+
+/**
+ * Build a `usage` data part summarising token consumption for the request.
+ *
+ * Returns `undefined` when either the prompt or completion token count was
+ * not collected (e.g. the stream ended before reporting stats), so callers
+ * can treat an `undefined` result as "nothing to report".
+ */
+function buildUsageDataPart(
+  promptTokenCount: number | undefined,
+  completionTokenCount: number | undefined
+): vscode.LanguageModelDataPart | undefined {
+  if (promptTokenCount === undefined || completionTokenCount === undefined) {
+    return undefined;
+  }
+  return new vscode.LanguageModelDataPart(
+    new TextEncoder().encode(JSON.stringify({
+      prompt_tokens: promptTokenCount,
+      completion_tokens: completionTokenCount,
+      total_tokens: promptTokenCount + completionTokenCount
+    })),
+    usageMimeType
+  );
 }
 
 function warningHistory(
