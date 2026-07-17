@@ -37,12 +37,17 @@ export function toOllamaMessages(messages: readonly vscode.LanguageModelChatRequ
     }
 
     if (text.length > 0 || images.length > 0 || toolCalls.length > 0) {
-      converted.push({
+      const convertedMessage: OllamaChatMessage = {
         role: roleToOllama(message.role),
-        content: text.join('\n'),
-        images: images.length > 0 ? images : undefined,
-        tool_calls: toolCalls.length > 0 ? toolCalls : undefined
-      });
+        content: text.join('\n')
+      };
+      if (images.length > 0) {
+        convertedMessage.images = images;
+      }
+      if (toolCalls.length > 0) {
+        convertedMessage.tool_calls = toolCalls;
+      }
+      converted.push(convertedMessage);
     }
 
     converted.push(...toolResults);
