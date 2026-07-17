@@ -76,13 +76,35 @@ function roleToOllama(role: vscode.LanguageModelChatMessageRole): string {
 }
 
 function toolResultContent(part: vscode.LanguageModelToolResultPart): string {
-  return part.content.map(item => {
+  const content: string[] = [];
+
+  for (const item of sanitizeToolResult(part)) {
     if (item instanceof vscode.LanguageModelTextPart) {
-      return item.value;
+      content.push(item.value);
+      continue;
     }
-    if (item instanceof vscode.LanguageModelDataPart && item.mimeType.startsWith('text/')) {
-      return new TextDecoder().decode(item.data);
+    if (item instanceof vscode.LanguageModelDataPart) {
+      if (item.mimeType.startsWith('text/')) {
+        content.push(new TextDecoder().decode(item.data));
+        continue;
+      }
     }
-    return JSON.stringify(item);
-  }).join('\n');
+    content.push(JSON.stringify(item));
+  }
+
+  return content.join('\n');
+}
+
+const providerOnlyToolResultMimeTypes: ReadonlySet<string> = new Set(['cache_control']);
+
+/**
+ * Remove provider-only metadata before tool results become model-visible text.
+ * Add future control MIME types to providerOnlyToolResultMimeTypes.
+ */
+function sanitizeToolResult(
+  part: vscode.LanguageModelToolResultPart
+): vscode.LanguageModelToolResultPart['content'] {
+  return part.content.filter(item =>
+    !(item instanceof vscode.LanguageModelDataPart && providerOnlyToolResultMimeTypes.has(item.mimeType))
+  );
 }
