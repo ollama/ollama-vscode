@@ -36,6 +36,32 @@ Local models do not require sign-in. Run `ollama signin` to use cloud models.
 
 The extension discovers models from `http://127.0.0.1:11434` by default.
 
+### Configure context length
+
+If the Ollama server uses `OLLAMA_CONTEXT_LENGTH`, configure the extension with
+the same value. For example, if the server starts with:
+
+```sh
+OLLAMA_CONTEXT_LENGTH=65536 ollama serve
+```
+
+Open VS Code Settings with `Cmd+,` on macOS or `Ctrl+,` on Windows and Linux.
+Search for `Ollama: Max Context Length` and enter the same value. For the
+example above, add this to `settings.json` instead:
+
+```json
+{
+  "ollama.maxContextLength": 65536
+}
+```
+
+The extension refreshes the model list when the setting changes and reports a
+context window no larger than the configured value. The Ollama output channel
+confirms it with `capped at 65536 context tokens` for the example above.
+
+`Ollama: Max Context Length` is a setting. `Ollama: Refresh Models` is a
+separate command in the Command Palette.
+
 ## Commands
 
 The extension adds these commands to the Command Palette:

@@ -53,6 +53,12 @@
               "additionalProperties": {
                 "type": "string"
               }
+            },
+            "maxContextLength": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Maximum Context Length",
+              "description": "Maximum context length configured on this Ollama server. If the server uses OLLAMA_CONTEXT_LENGTH, enter the same value here."
             }
           }
         }
@@ -74,6 +80,11 @@
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "ollama.maxContextLength": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum context length configured on the Ollama server. If the server uses OLLAMA_CONTEXT_LENGTH, enter the same value here. Provider configuration takes precedence when present."
           }
         }
       }
