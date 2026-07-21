@@ -26,9 +26,39 @@ ollama signin
 
 Local models do not require sign-in. Run `ollama signin` to use cloud models.
 
+## Manual Installation
+
+Download the latest `.vsix` release from the [Releases](https://github.com/tpedretti/ollama-vscode-openwebui/releases) page, then install it using one of these methods:
+
+#### Method 1 — VS Code UI (recommended)
+
+1. Open VS Code.
+2. Open the **Extensions** view (`Ctrl+Shift+X` / `Cmd+Shift+X`).
+3. Click the **...** (More Actions) menu in the top-right corner of the Extensions panel.
+4. Select **Install from VSIX...** and navigate to the downloaded `.vsix` file.
+5. Once installed, reload VS Code when prompted.
+
+#### Method 2 — Command Line
+
+1. Open a terminal and navigate to the folder containing the downloaded `.vsix` file.
+2. Run:
+   ```sh
+   code --install-extension ./ollama-0.0.5.vsix
+   ```
+   (Replace `ollama-0.0.5.vsix` with the actual filename.)
+3. Reload VS Code when prompted, or run `code --reload-window`.
+
+#### Method 3 — Drag and Drop
+
+1. Open VS Code and go to the **Extensions** view (`Ctrl+Shift+X` / `Cmd+Shift+X`).
+2. Drag the downloaded `.vsix` file from your file manager into the Extensions panel.
+3. VS Code will automatically install the extension. Reload when prompted.
+
+> **Note:** If you previously installed the Ollama extension from the Marketplace, the manual installation will override it. To revert, uninstall via the Extensions view or run `code --uninstall-extension ollama`.
+
 ## Get started
 
-1. Install the Ollama extension from the VS Code Marketplace (or install this fork's `.vsix`).
+1. Install the Ollama extension — see **Manual Installation** below.
 2. Start Ollama *or* your Open WebUI instance.
 3. Open Chat in VS Code.
 4. Open the model picker at the bottom of the chat input.
