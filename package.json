@@ -3,7 +3,7 @@
   "displayName": "Ollama",
   "description": "Ollama language model provider for VS Code.",
   "publisher": "Ollama",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "icon": "images/icon.png",
   "license": "MIT",
   "repository": {
