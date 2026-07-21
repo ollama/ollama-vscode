@@ -56,9 +56,17 @@ Download the latest `.vsix` release from the [Releases](https://github.com/tpedr
 
 > **Note:** If you previously installed the Ollama extension from the Marketplace, the manual installation will override it. To revert, uninstall via the Extensions view or run `code --uninstall-extension ollama`.
 
+### Verifying Installation
+
+After installing, confirm the extension is active:
+
+1. Open the **Extensions** view (`Ctrl+Shift+X` / `Cmd+Shift+X`).
+2. Search for **Ollama** — you should see it listed with a green **Enable** or gear icon indicating it's installed.
+3. Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and type `Ollama: Refresh Models`. If the command appears, the extension is active.
+
 ## Get started
 
-1. Install the Ollama extension — see **Manual Installation** below.
+1. Install the Ollama extension — see **Manual Installation** above.
 2. Start Ollama *or* your Open WebUI instance.
 3. Open Chat in VS Code.
 4. Open the model picker at the bottom of the chat input.
@@ -86,8 +94,8 @@ Open WebUI proxy mode requires two settings:
 
 1. Open **Settings** (`Ctrl+,` / `Cmd+,`).
 2. Search for **Ollama**.
-3. Check the box **"Use Open WebUI Ollama API Proxy"**.
-4. Enter your Open WebUI API key in the **"Open WebUI API Key"** field.
+3. Check the box **"Use Open WebUI Ollama API Proxy"** (or enable **ollama.useOpenWebUIProxy**).
+4. Enter your Open WebUI API key in the **"Open WebUI API Key"** field (**ollama.openWebUIApiKey**).
    - Get your key from Open WebUI → **Settings** → **Account** → **API Keys**.
 
 #### Option B — `settings.json`
