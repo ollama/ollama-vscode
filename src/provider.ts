@@ -83,6 +83,21 @@ interface OllamaShowResponse extends Omit<ShowResponse, 'model_info'> {
   max_output_tokens?: number;
 }
 
+const OLLAMA_THINKING_EFFORT_PROPERTY = 'thinkingLevel';
+const OLLAMA_THINKING_EFFORT_LEVELS = ['none', 'low', 'medium', 'high'] as const;
+const OLLAMA_THINKING_EFFORT_DESCRIPTIONS = [
+  'No reasoning applied',
+  'Faster responses with less reasoning',
+  'Balanced reasoning and speed',
+  'Greater reasoning depth but slower'
+];
+const OLLAMA_THINKING_EFFORT_DEFAULT: OllamaThinkingEffortLevel = 'medium';
+
+type OllamaThinkingEffortLevel = (typeof OLLAMA_THINKING_EFFORT_LEVELS)[number];
+interface OllamaModelConfiguration extends vscode.LanguageModelConfigurationSchema {
+  [OLLAMA_THINKING_EFFORT_PROPERTY]?: OllamaThinkingEffortLevel;
+}
+
 type ModelInfo = Record<string, unknown> | Map<string, unknown>;
 
 export interface OllamaChatMessage extends Message {
@@ -111,6 +126,7 @@ interface OllamaToolCall extends ToolCall {
 interface OllamaChatResponse extends Partial<Omit<ChatResponse, 'message'>> {
   message?: {
     content?: string;
+    thinking?: string;
     tool_calls?: OllamaToolCall[];
   };
   done?: boolean;
@@ -212,7 +228,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     model: OllamaLanguageModel,
     messages: readonly vscode.LanguageModelChatRequestMessage[],
     options: vscode.ProvideLanguageModelChatResponseOptions,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+    progress: vscode.Progress<vscode.LanguageModelResponsePart2>,
     token: vscode.CancellationToken
   ): Promise<void> {
     const ollamaMessages = toOllamaMessages(messages);
@@ -250,12 +266,18 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     try {
       let promptTokenCount: number | undefined;
       let completionTokenCount: number | undefined;
+      const rawThinkingLevel = options.modelConfiguration?.[OLLAMA_THINKING_EFFORT_PROPERTY];
+      const thinkingLevel: OllamaThinkingEffortLevel | undefined = OLLAMA_THINKING_EFFORT_LEVELS.includes(rawThinkingLevel)
+        ? rawThinkingLevel
+        : undefined;
+
       let chatRequestSettled = false;
       const streamRequest = ollama.chat({
         model: model.model,
         messages: ollamaMessages,
         stream: true,
         tools: tools.length > 0 ? tools : undefined,
+        think: thinkingLevel == 'none' ? false : thinkingLevel,
         options: options.modelOptions ? { ...options.modelOptions } : undefined
       } as ChatRequest & { stream: true });
       void streamRequest.then(
@@ -307,6 +329,10 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
         }
 
         const content = response.message?.content;
+        const thinking = response.message?.thinking;
+        if (thinking) {
+          progress.report(new vscode.LanguageModelThinkingPart(thinking))
+        }
         if (content) {
           progress.report(new vscode.LanguageModelTextPart(content));
         }
@@ -520,7 +546,20 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       url: configuration.url,
       headers: configuration.headers,
       local: !isRemoteModel(model) && !isCloudModel(name),
-      recommendedReplacement: replacement
+      recommendedReplacement: replacement,
+      configurationSchema: {
+        properties: hasCapability(capabilities, 'thinking', 'reasoning') ? {
+          [OLLAMA_THINKING_EFFORT_PROPERTY]: {
+            type: 'string',
+            title: 'Thinking Effort',
+            enum: OLLAMA_THINKING_EFFORT_LEVELS,
+            enumItemLabels: OLLAMA_THINKING_EFFORT_LEVELS.map(level => level.charAt(0).toUpperCase() + level.slice(1)),
+            enumDescriptions: OLLAMA_THINKING_EFFORT_DESCRIPTIONS,
+            default: OLLAMA_THINKING_EFFORT_DEFAULT,
+            group: 'navigation'
+          }
+        } : {}
+      }
     };
   }
 }
