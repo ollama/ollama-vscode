@@ -15,6 +15,7 @@
     "skipLibCheck": true
   },
   "include": [
-    "src"
+    "src",
+    "vscode.proposed.*.d.ts"
   ]
 }
