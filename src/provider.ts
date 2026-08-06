@@ -22,11 +22,13 @@ import {
   recommendedReplacement
 } from './recommendations';
 import { createChatFetch } from './chatFetch';
+import { calculateModelTokenLimits, resolveMaxContextLength } from './modelLimits';
 
 interface OllamaProviderConfiguration {
   url: string;
   models: string[];
   headers: Record<string, string>;
+  maxContextLength?: number;
 }
 
 interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
@@ -164,8 +166,11 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
         const recommendationSuffix = recommendations.length > 0
           ? ` using ${recommendations.length} recommendation(s)`
           : '';
+        const contextLimitSuffix = configuration.maxContextLength === undefined
+          ? ''
+          : ` capped at ${configuration.maxContextLength} context tokens`;
         this.output?.appendLine(
-          `Providing ${models.length} Ollama model(s) from ${configuration.url}${versionSuffix}${recommendationSuffix}.`
+          `Providing ${models.length} Ollama model(s) from ${configuration.url}${versionSuffix}${recommendationSuffix}${contextLimitSuffix}.`
         );
 
         return hydratedModels.map(({ model, show }) => this.toLanguageModel(
@@ -369,7 +374,11 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   ): OllamaLanguageModel {
     const capabilities = mergedCapabilities(model.capabilities, show?.capabilities);
     const name = model.name;
-    const { maxInputTokens, maxOutputTokens } = modelTokenLimits(model, show);
+    const { maxInputTokens, maxOutputTokens } = modelTokenLimits(
+      model,
+      show,
+      configuration.maxContextLength
+    );
 
     return {
       id: name,
@@ -511,7 +520,11 @@ function getConfiguration(options?: vscode.PrepareLanguageModelChatModelOptions)
     models: Array.isArray(configuration?.models)
       ? configuration.models.filter((model): model is string => typeof model === 'string' && model.length > 0)
       : [],
-    headers: getConfiguredHeaders(configuration, settings)
+    headers: getConfiguredHeaders(configuration, settings),
+    maxContextLength: resolveMaxContextLength(
+      configuration?.maxContextLength,
+      settings.get<number>('maxContextLength')
+    )
   };
 }
 
@@ -584,25 +597,21 @@ function modelFamily(model: OllamaTagsModel, show: OllamaShowResponse | undefine
     : model.name.split(':')[0] || model.name;
 }
 
-function modelTokenLimits(model: OllamaTagsModel, show: OllamaShowResponse | undefined) {
+function modelTokenLimits(
+  model: OllamaTagsModel,
+  show: OllamaShowResponse | undefined,
+  configuredMaxContextLength: number | undefined
+) {
   const explicitMaxInputTokens = explicitTokenLimit(model, show, 'input');
   const explicitMaxOutputTokens = explicitTokenLimit(model, show, 'output');
-  const contextWindow = sharedContextWindow(model, show)
-    ?? (explicitMaxInputTokens === undefined ? fallbackContextWindow : undefined);
-
-  if (contextWindow === undefined) {
-    return {
-      maxInputTokens: explicitMaxInputTokens ?? fallbackContextWindow,
-      maxOutputTokens: explicitMaxOutputTokens ?? defaultMaxOutputTokens
-    };
-  }
-
-  // VS Code displays input + output; Ollama reports one shared context window.
-  const maxOutputTokens = outputTokenLimit(contextWindow, explicitMaxOutputTokens);
-  return {
-    maxInputTokens: contextWindow - maxOutputTokens,
-    maxOutputTokens
-  };
+  return calculateModelTokenLimits(
+    sharedContextWindow(model, show),
+    explicitMaxInputTokens,
+    explicitMaxOutputTokens,
+    configuredMaxContextLength,
+    fallbackContextWindow,
+    defaultMaxOutputTokens
+  );
 }
 
 function explicitTokenLimit(
@@ -645,17 +654,6 @@ function sharedContextWindow(model: OllamaTagsModel, show: OllamaShowResponse | 
     }
   }
   return undefined;
-}
-
-function outputTokenLimit(contextWindow: number, configuredOutputLimit: number | undefined): number {
-  if (contextWindow <= 1) {
-    return 0;
-  }
-
-  return Math.min(
-    configuredOutputLimit ?? defaultMaxOutputTokens,
-    contextWindow - 1
-  );
 }
 
 function numericParameterValue(text: string | undefined, name: string): number | undefined {
