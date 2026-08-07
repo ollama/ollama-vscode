@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { Ollama } from 'ollama';
 import { OllamaLanguageModelProvider, createFetch, disposeAll } from './provider';
+import { inspectOllamaModels, ollamaDiagnosticsClientOptions } from './diagnostics';
 
 const defaultOllamaURL = 'http://127.0.0.1:11434';
 const ollamaVendor = 'ollama-models';
@@ -35,51 +36,53 @@ async function diagnoseModels(output: vscode.OutputChannel) {
   const ollamaVSCodeModels = allVSCodeModels.filter(model => model.vendor === ollamaVendor);
   output.appendLine(`VS Code returned ${ollamaVSCodeModels.length} Ollama language model(s).`);
 
-  const directModels = await listDirectOllamaModels(output);
-  if (directModels.length > 0) {
-    output.appendLine(`Direct Ollama API returned ${directModels.length} model(s).`);
-    for (const model of directModels.slice(0, 20)) {
-      output.appendLine(`- ${model}`);
-    }
-    if (directModels.length > 20) {
-      output.appendLine(`... ${directModels.length - 20} more`);
-    }
-  }
+  await inspectDirectOllamaModels(output);
 
   output.appendLine('--- End Diagnostics ---');
 }
 
-async function listDirectOllamaModels(output: vscode.OutputChannel): Promise<string[]> {
+async function inspectDirectOllamaModels(output: vscode.OutputChannel): Promise<void> {
   const settings = vscode.workspace.getConfiguration('ollama');
   const endpoint = settings.get<string>('endpoint', defaultOllamaURL) || defaultOllamaURL;
   const source = new vscode.CancellationTokenSource();
   const disposables: vscode.Disposable[] = [source];
-  const ollama = new Ollama({
-    host: endpoint,
-    headers: getConfiguredHeaders(settings),
-    fetch: createFetch(source.token, disposables)
-  });
+  const ollama = new Ollama(ollamaDiagnosticsClientOptions(
+    endpoint,
+    settings.get<Record<string, unknown>>('headers', {}),
+    createFetch(source.token, disposables)
+  ));
   const timer = setTimeout(() => source.cancel(), 5000);
   try {
-    return ((await ollama.list()).models ?? [])
-      .filter(model => typeof model.name === 'string' && model.name.length > 0)
-      .map(model => model.name);
-  } catch (error) {
-    output.appendLine(`Direct Ollama API failed at ${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
-    return [];
+    const inspection = await inspectOllamaModels(ollama);
+
+    if (inspection.availableModels !== undefined) {
+      const availableModelNames = inspection.availableModels;
+      if (availableModelNames.length > 0) {
+        output.appendLine(`Direct Ollama API returned ${availableModelNames.length} model(s).`);
+        for (const model of availableModelNames.slice(0, 20)) {
+          output.appendLine(`- ${model}`);
+        }
+        if (availableModelNames.length > 20) {
+          output.appendLine(`... ${availableModelNames.length - 20} more`);
+        }
+      }
+    } else {
+      output.appendLine(`Direct Ollama API failed at ${endpoint}: ${formatError(inspection.availableModelsError)}`);
+    }
+
+    if (inspection.loadedModelLines !== undefined) {
+      for (const line of inspection.loadedModelLines) {
+        output.appendLine(line);
+      }
+    } else {
+      output.appendLine(`Could not inspect loaded Ollama models at ${endpoint}: ${formatError(inspection.loadedModelsError)}`);
+    }
   } finally {
     clearTimeout(timer);
     disposeAll(disposables);
   }
 }
 
-function getConfiguredHeaders(settings: vscode.WorkspaceConfiguration): Record<string, string> {
-  const configured = settings.get<Record<string, unknown>>('headers', {});
-  const headers: Record<string, string> = {};
-  for (const [name, value] of Object.entries(configured)) {
-    if (typeof value === 'string') {
-      headers[name] = value;
-    }
-  }
-  return headers;
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
