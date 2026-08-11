@@ -329,7 +329,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
         const content = response.message?.content;
         const thinking = response.message?.thinking;
         if (thinking) {
-          progress.report(new vscode.LanguageModelThinkingPart(thinking))
+          progress.report(new vscode.LanguageModelThinkingPart(thinking));
         }
         if (content) {
           progress.report(new vscode.LanguageModelTextPart(content));
