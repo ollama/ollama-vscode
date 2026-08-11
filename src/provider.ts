@@ -34,6 +34,15 @@ import {
   type OllamaDiagnosticsConfiguration,
   type OllamaDiagnosticsConfigurationSelection
 } from './diagnostics';
+import {
+  isThinkingLevel,
+  thinkingLevelDescription,
+  thinkingLevelLabel,
+  thinkingLevelProperty,
+  thinkingPolicy,
+  toOllamaThinkValue,
+  type ThinkingLevel
+} from './thinking';
 
 interface OllamaProviderConfiguration {
   url: string;
@@ -83,19 +92,8 @@ interface OllamaShowResponse extends Omit<ShowResponse, 'model_info'> {
   max_output_tokens?: number;
 }
 
-const OLLAMA_THINKING_EFFORT_PROPERTY = 'thinkingLevel';
-const OLLAMA_THINKING_EFFORT_LEVELS = ['none', 'low', 'medium', 'high'] as const;
-const OLLAMA_THINKING_EFFORT_DESCRIPTIONS = [
-  'No reasoning applied',
-  'Faster responses with less reasoning',
-  'Balanced reasoning and speed',
-  'Greater reasoning depth but slower'
-];
-const OLLAMA_THINKING_EFFORT_DEFAULT: OllamaThinkingEffortLevel = 'medium';
-
-type OllamaThinkingEffortLevel = (typeof OLLAMA_THINKING_EFFORT_LEVELS)[number];
 interface OllamaModelConfiguration extends vscode.LanguageModelConfigurationSchema {
-  [OLLAMA_THINKING_EFFORT_PROPERTY]?: OllamaThinkingEffortLevel;
+  [thinkingLevelProperty]?: ThinkingLevel;
 }
 
 type ModelInfo = Record<string, unknown> | Map<string, unknown>;
@@ -266,8 +264,8 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     try {
       let promptTokenCount: number | undefined;
       let completionTokenCount: number | undefined;
-      const rawThinkingLevel = options.modelConfiguration?.[OLLAMA_THINKING_EFFORT_PROPERTY];
-      const thinkingLevel: OllamaThinkingEffortLevel | undefined = OLLAMA_THINKING_EFFORT_LEVELS.includes(rawThinkingLevel)
+      const rawThinkingLevel = options.modelConfiguration?.[thinkingLevelProperty];
+      const thinkingLevel: ThinkingLevel | undefined = isThinkingLevel(rawThinkingLevel)
         ? rawThinkingLevel
         : undefined;
 
@@ -277,7 +275,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
         messages: ollamaMessages,
         stream: true,
         tools: tools.length > 0 ? tools : undefined,
-        think: thinkingLevel == 'none' ? false : thinkingLevel,
+        think: toOllamaThinkValue(thinkingLevel),
         options: options.modelOptions ? { ...options.modelOptions } : undefined
       } as ChatRequest & { stream: true });
       void streamRequest.then(
@@ -528,12 +526,28 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   ): OllamaLanguageModel {
     const capabilities = mergedCapabilities(model.capabilities, show?.capabilities);
     const name = model.name;
+    const family = modelFamily(model, show);
+    const policy = thinkingPolicy(name, family);
+    let thinkingProperties: NonNullable<vscode.LanguageModelConfigurationSchema['properties']> = {};
+    if (hasCapability(capabilities, 'thinking', 'reasoning') && policy) {
+      thinkingProperties = {
+        [thinkingLevelProperty]: {
+          type: 'string',
+          title: 'Thinking Effort',
+          enum: policy.levels,
+          enumItemLabels: policy.levels.map(thinkingLevelLabel),
+          enumDescriptions: policy.levels.map(thinkingLevelDescription),
+          default: policy.defaultLevel,
+          group: 'navigation'
+        }
+      };
+    }
     const { maxInputTokens, maxOutputTokens } = modelTokenLimits(model, show);
 
     return {
       id: name,
       name,
-      family: modelFamily(model, show),
+      family,
       tooltip: recommended ? 'Recommended' : name,
       version: '1.0',
       maxInputTokens,
@@ -548,17 +562,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       local: !isRemoteModel(model) && !isCloudModel(name),
       recommendedReplacement: replacement,
       configurationSchema: {
-        properties: hasCapability(capabilities, 'thinking', 'reasoning') ? {
-          [OLLAMA_THINKING_EFFORT_PROPERTY]: {
-            type: 'string',
-            title: 'Thinking Effort',
-            enum: OLLAMA_THINKING_EFFORT_LEVELS,
-            enumItemLabels: OLLAMA_THINKING_EFFORT_LEVELS.map(level => level.charAt(0).toUpperCase() + level.slice(1)),
-            enumDescriptions: OLLAMA_THINKING_EFFORT_DESCRIPTIONS,
-            default: OLLAMA_THINKING_EFFORT_DEFAULT,
-            group: 'navigation'
-          }
-        } : {}
+        properties: thinkingProperties
       }
     };
   }

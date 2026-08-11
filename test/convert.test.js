@@ -25,6 +25,12 @@ class LanguageModelDataPart {
 
 class LanguageModelToolCallPart {}
 
+class LanguageModelThinkingPart {
+  constructor(value) {
+    this.value = value;
+  }
+}
+
 class LanguageModelToolResultPart {
   constructor(callId, content) {
     this.callId = callId;
@@ -36,6 +42,7 @@ const vscode = {
   LanguageModelChatMessageRole: { User: 1, Assistant: 2, System: 3 },
   LanguageModelDataPart,
   LanguageModelTextPart,
+  LanguageModelThinkingPart,
   LanguageModelToolCallPart,
   LanguageModelToolResultPart
 };
@@ -125,5 +132,34 @@ test('forwards image data from tool results on the corresponding tool message', 
     content: 'browser screenshot',
     images: [Buffer.from(imageBytes).toString('base64')],
     tool_call_id: 'call-4'
+  }]);
+});
+
+test('preserves thinking content in assistant history', () => {
+  assert.deepEqual(toOllamaMessages([{
+    role: 2,
+    content: [
+      new LanguageModelThinkingPart(['first thought', 'second thought']),
+      new LanguageModelTextPart('answer')
+    ]
+  }]), [{
+    role: 'assistant',
+    content: 'answer',
+    thinking: 'first thought\nsecond thought',
+    images: undefined,
+    tool_calls: undefined
+  }]);
+});
+
+test('preserves an assistant history message that contains only thinking', () => {
+  assert.deepEqual(toOllamaMessages([{
+    role: 2,
+    content: [new LanguageModelThinkingPart('thought without final text')]
+  }]), [{
+    role: 'assistant',
+    content: '',
+    thinking: 'thought without final text',
+    images: undefined,
+    tool_calls: undefined
   }]);
 });

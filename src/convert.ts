@@ -42,7 +42,7 @@ export function toOllamaMessages(messages: readonly vscode.LanguageModelChatRequ
       }
     }
 
-    if (text.length > 0 || images.length > 0 || toolCalls.length > 0) {
+    if (text.length > 0 || thinking.length > 0 || images.length > 0 || toolCalls.length > 0) {
       converted.push({
         role: roleToOllama(message.role),
         content: text.join('\n'),
