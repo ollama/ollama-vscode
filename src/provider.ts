@@ -35,12 +35,13 @@ import {
   type OllamaDiagnosticsConfigurationSelection
 } from './diagnostics';
 import {
-  isThinkingLevel,
+  supportedThinkingLevel,
   thinkingLevelDescription,
   thinkingLevelLabel,
   thinkingLevelProperty,
   thinkingPolicy,
   toOllamaThinkValue,
+  type ThinkingPolicy,
   type ThinkingLevel
 } from './thinking';
 
@@ -55,6 +56,7 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
   url: string;
   headers: Record<string, string>;
   local: boolean;
+  thinkingPolicy?: ThinkingPolicy;
   recommendedReplacement?: string;
 }
 
@@ -265,9 +267,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       let promptTokenCount: number | undefined;
       let completionTokenCount: number | undefined;
       const rawThinkingLevel = options.modelConfiguration?.[thinkingLevelProperty];
-      const thinkingLevel: ThinkingLevel | undefined = isThinkingLevel(rawThinkingLevel)
-        ? rawThinkingLevel
-        : undefined;
+      const thinkingLevel = supportedThinkingLevel(model.thinkingPolicy, rawThinkingLevel);
 
       let chatRequestSettled = false;
       const streamRequest = ollama.chat({
@@ -560,6 +560,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       url: configuration.url,
       headers: configuration.headers,
       local: !isRemoteModel(model) && !isCloudModel(name),
+      thinkingPolicy: policy,
       recommendedReplacement: replacement,
       configurationSchema: {
         properties: thinkingProperties

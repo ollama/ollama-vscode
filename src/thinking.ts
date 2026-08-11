@@ -47,6 +47,16 @@ export function isThinkingLevel(value: unknown): value is ThinkingLevel {
   return typeof value === 'string' && (thinkingLevels as readonly string[]).includes(value);
 }
 
+export function supportedThinkingLevel(
+  policy: ThinkingPolicy | undefined,
+  value: unknown
+): ThinkingLevel | undefined {
+  if (!policy || !isThinkingLevel(value)) {
+    return undefined;
+  }
+  return policy.levels.includes(value) ? value : undefined;
+}
+
 export function toOllamaThinkValue(level: ThinkingLevel | undefined): OllamaThinkValue | undefined {
   if (level === undefined) {
     return undefined;

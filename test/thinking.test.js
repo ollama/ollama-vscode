@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  supportedThinkingLevel,
   thinkingPolicy,
   toOllamaThinkValue
 } = require('../out/thinking');
@@ -49,4 +50,23 @@ test('translates UI thinking levels to Ollama request values', () => {
   assert.equal(toOllamaThinkValue('medium'), 'medium');
   assert.equal(toOllamaThinkValue('high'), 'high');
   assert.equal(toOllamaThinkValue('max'), 'max');
+});
+
+test('accepts only levels supported by the selected model policy', () => {
+  const gptOSS = thinkingPolicy('gpt-oss:20b');
+  assert.equal(supportedThinkingLevel(gptOSS, 'low'), 'low');
+  assert.equal(supportedThinkingLevel(gptOSS, 'none'), undefined);
+
+  const deepSeekV4 = thinkingPolicy('deepseek-v4-flash:cloud');
+  assert.equal(supportedThinkingLevel(deepSeekV4, 'max'), 'max');
+  assert.equal(supportedThinkingLevel(deepSeekV4, 'low'), undefined);
+
+  const glm52 = thinkingPolicy('glm-5.2:cloud');
+  assert.equal(supportedThinkingLevel(glm52, 'high'), 'high');
+  assert.equal(supportedThinkingLevel(glm52, 'medium'), undefined);
+});
+
+test('omits stale configuration for models without a verified policy', () => {
+  assert.equal(supportedThinkingLevel(undefined, 'high'), undefined);
+  assert.equal(supportedThinkingLevel(undefined, 'invalid'), undefined);
 });
