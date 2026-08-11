@@ -9,6 +9,13 @@ export interface ThinkingPolicy {
   defaultLevel: ThinkingLevel;
 }
 
+// Keep this inventory aligned with the model documentation published on
+// ollama.com/library. These mappings were last verified on 2026-08-11:
+// - https://ollama.com/library/gpt-oss
+// - https://ollama.com/library/deepseek-v4-flash
+// - https://ollama.com/library/deepseek-v4-pro
+// - https://ollama.com/library/glm-5.2
+
 /**
  * Return only thinking controls documented for a known Ollama model family.
  * Ollama's generic `thinking` capability does not expose the accepted values,
