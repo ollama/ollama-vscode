@@ -36,7 +36,7 @@ export function thinkingPolicy(modelName: string, family?: string): ThinkingPoli
   if (identifiers.some(value => value === 'deepseek-v4-flash' || value === 'deepseek-v4-pro')) {
     return {
       levels: ['none', 'high', 'max'],
-      defaultLevel: 'high'
+      defaultLevel: 'none'
     };
   }
 
@@ -58,7 +58,13 @@ export function supportedThinkingLevel(
   policy: ThinkingPolicy | undefined,
   value: unknown
 ): ThinkingLevel | undefined {
-  if (!policy || !isThinkingLevel(value)) {
+  if (!policy) {
+    return undefined;
+  }
+  if (value === undefined) {
+    return policy.defaultLevel;
+  }
+  if (!isThinkingLevel(value)) {
     return undefined;
   }
   return policy.levels.includes(value) ? value : undefined;

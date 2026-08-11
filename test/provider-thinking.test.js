@@ -111,6 +111,23 @@ test.beforeEach(() => {
   chatRequests = [];
 });
 
+test('sends the policy default when VS Code omits an unset model configuration', async () => {
+  models = [{ name: 'deepseek-v4-flash:cloud', capabilities: ['thinking'], remote_host: 'ollama.com' }];
+  const provider = new OllamaLanguageModelProvider();
+  const [model] = await provider.provideLanguageModelChatInformation({}, cancellationToken);
+
+  await provider.provideLanguageModelChatResponse(
+    model,
+    [{ role: 1, content: [new LanguageModelTextPart('hello')] }],
+    { modelConfiguration: {} },
+    { report() {} },
+    cancellationToken
+  );
+
+  assert.equal(chatRequests.length, 1);
+  assert.equal(chatRequests[0].think, false);
+});
+
 test('omits a stale thinking value from the actual Ollama request', async () => {
   models = [{ name: 'gpt-oss:20b', capabilities: ['thinking'], remote_host: 'ollama.com' }];
   const provider = new OllamaLanguageModelProvider();

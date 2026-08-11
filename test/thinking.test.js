@@ -21,7 +21,7 @@ test('uses documented GPT-OSS effort levels and does not offer disabling', () =>
 test('uses documented DeepSeek V4 non-thinking, high, and max modes', () => {
   const expected = {
     levels: ['none', 'high', 'max'],
-    defaultLevel: 'high'
+    defaultLevel: 'none'
   };
 
   assert.deepEqual(thinkingPolicy('deepseek-v4-flash:cloud'), expected);
@@ -54,14 +54,17 @@ test('translates UI thinking levels to Ollama request values', () => {
 
 test('accepts only levels supported by the selected model policy', () => {
   const gptOSS = thinkingPolicy('gpt-oss:20b');
+  assert.equal(supportedThinkingLevel(gptOSS, undefined), 'medium');
   assert.equal(supportedThinkingLevel(gptOSS, 'low'), 'low');
   assert.equal(supportedThinkingLevel(gptOSS, 'none'), undefined);
 
   const deepSeekV4 = thinkingPolicy('deepseek-v4-flash:cloud');
+  assert.equal(supportedThinkingLevel(deepSeekV4, undefined), 'none');
   assert.equal(supportedThinkingLevel(deepSeekV4, 'max'), 'max');
   assert.equal(supportedThinkingLevel(deepSeekV4, 'low'), undefined);
 
   const glm52 = thinkingPolicy('glm-5.2:cloud');
+  assert.equal(supportedThinkingLevel(glm52, undefined), 'high');
   assert.equal(supportedThinkingLevel(glm52, 'high'), 'high');
   assert.equal(supportedThinkingLevel(glm52, 'medium'), undefined);
 });
