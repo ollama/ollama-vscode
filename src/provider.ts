@@ -34,6 +34,16 @@ import {
   type OllamaDiagnosticsConfiguration,
   type OllamaDiagnosticsConfigurationSelection
 } from './diagnostics';
+import {
+  supportedThinkingLevel,
+  thinkingLevelDescription,
+  thinkingLevelLabel,
+  thinkingLevelProperty,
+  thinkingPolicy,
+  toOllamaThinkValue,
+  type ThinkingPolicy,
+  type ThinkingLevel
+} from './thinking';
 
 interface OllamaProviderConfiguration {
   url: string;
@@ -46,6 +56,7 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
   url: string;
   headers: Record<string, string>;
   local: boolean;
+  thinkingPolicy?: ThinkingPolicy;
   recommendedReplacement?: string;
 }
 
@@ -83,6 +94,10 @@ interface OllamaShowResponse extends Omit<ShowResponse, 'model_info'> {
   max_output_tokens?: number;
 }
 
+interface OllamaModelConfiguration extends vscode.LanguageModelConfigurationSchema {
+  [thinkingLevelProperty]?: ThinkingLevel;
+}
+
 type ModelInfo = Record<string, unknown> | Map<string, unknown>;
 
 export interface OllamaChatMessage extends Message {
@@ -111,6 +126,7 @@ interface OllamaToolCall extends ToolCall {
 interface OllamaChatResponse extends Partial<Omit<ChatResponse, 'message'>> {
   message?: {
     content?: string;
+    thinking?: string;
     tool_calls?: OllamaToolCall[];
   };
   done?: boolean;
@@ -212,7 +228,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     model: OllamaLanguageModel,
     messages: readonly vscode.LanguageModelChatRequestMessage[],
     options: vscode.ProvideLanguageModelChatResponseOptions,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+    progress: vscode.Progress<vscode.LanguageModelResponsePart2>,
     token: vscode.CancellationToken
   ): Promise<void> {
     const ollamaMessages = toOllamaMessages(messages);
@@ -250,12 +266,16 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     try {
       let promptTokenCount: number | undefined;
       let completionTokenCount: number | undefined;
+      const rawThinkingLevel = options.modelConfiguration?.[thinkingLevelProperty];
+      const thinkingLevel = supportedThinkingLevel(model.thinkingPolicy, rawThinkingLevel);
+
       let chatRequestSettled = false;
       const streamRequest = ollama.chat({
         model: model.model,
         messages: ollamaMessages,
         stream: true,
         tools: tools.length > 0 ? tools : undefined,
+        think: toOllamaThinkValue(thinkingLevel),
         options: options.modelOptions ? { ...options.modelOptions } : undefined
       } as ChatRequest & { stream: true });
       void streamRequest.then(
@@ -307,6 +327,10 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
         }
 
         const content = response.message?.content;
+        const thinking = response.message?.thinking;
+        if (thinking) {
+          progress.report(new vscode.LanguageModelThinkingPart(thinking));
+        }
         if (content) {
           progress.report(new vscode.LanguageModelTextPart(content));
         }
@@ -502,12 +526,28 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   ): OllamaLanguageModel {
     const capabilities = mergedCapabilities(model.capabilities, show?.capabilities);
     const name = model.name;
+    const family = modelFamily(model, show);
+    const policy = thinkingPolicy(name, family);
+    let thinkingProperties: NonNullable<vscode.LanguageModelConfigurationSchema['properties']> = {};
+    if (hasCapability(capabilities, 'thinking', 'reasoning') && policy) {
+      thinkingProperties = {
+        [thinkingLevelProperty]: {
+          type: 'string',
+          title: 'Thinking Effort',
+          enum: policy.levels,
+          enumItemLabels: policy.levels.map(thinkingLevelLabel),
+          enumDescriptions: policy.levels.map(thinkingLevelDescription),
+          default: policy.defaultLevel,
+          group: 'navigation'
+        }
+      };
+    }
     const { maxInputTokens, maxOutputTokens } = modelTokenLimits(model, show);
 
     return {
       id: name,
       name,
-      family: modelFamily(model, show),
+      family,
       tooltip: recommended ? 'Recommended' : name,
       version: '1.0',
       maxInputTokens,
@@ -520,7 +560,11 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       url: configuration.url,
       headers: configuration.headers,
       local: !isRemoteModel(model) && !isCloudModel(name),
-      recommendedReplacement: replacement
+      thinkingPolicy: policy,
+      recommendedReplacement: replacement,
+      configurationSchema: {
+        properties: thinkingProperties
+      }
     };
   }
 }
