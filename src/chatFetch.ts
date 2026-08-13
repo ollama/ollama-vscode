@@ -11,8 +11,6 @@ interface ChatFetch {
   dispose(): void;
 }
 
-const CHAT_HEADERS_TIMEOUT = 10 * 60 * 1000;
-
 export function trustedCACertificates(
   loadCertificates: typeof getCACertificates = getCACertificates
 ): string[] {
@@ -23,7 +21,7 @@ export function trustedCACertificates(
 }
 
 export function createChatFetch(
-  headersTimeout = CHAT_HEADERS_TIMEOUT,
+  headersTimeout: number,
   loadCertificates: typeof getCACertificates = getCACertificates
 ): ChatFetch {
   const dispatcher = new Agent({

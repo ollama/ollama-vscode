@@ -80,6 +80,13 @@
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "ollama.inferenceTimeoutMinutes": {
+            "type": "integer",
+            "default": 10,
+            "minimum": 1,
+            "maximum": 60,
+            "description": "Maximum time, in minutes, to wait for Ollama to begin an inference response. Cancelling Chat still stops the request immediately."
           }
         }
       }

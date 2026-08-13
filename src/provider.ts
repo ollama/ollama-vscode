@@ -34,6 +34,7 @@ import {
   type OllamaDiagnosticsConfiguration,
   type OllamaDiagnosticsConfigurationSelection
 } from './diagnostics';
+import { inferenceTimeoutMilliseconds } from './inferenceTimeout';
 
 interface OllamaProviderConfiguration {
   url: string;
@@ -234,7 +235,10 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     }
 
     const disposables: vscode.Disposable[] = [];
-    const chatFetch = createChatFetch();
+    const inferenceTimeout = inferenceTimeoutMilliseconds(
+      vscode.workspace.getConfiguration('ollama').get('inferenceTimeoutMinutes')
+    );
+    const chatFetch = createChatFetch(inferenceTimeout);
     disposables.push(chatFetch);
     const ollama = new Ollama({
       host: model.url,
