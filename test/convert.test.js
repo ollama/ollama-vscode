@@ -55,10 +55,11 @@ try {
   Module._load = originalLoad;
 }
 
-test('omits cache control metadata from tool results', () => {
+test('omits cache control and unrecognized provider metadata from tool results', () => {
   const result = new LanguageModelToolResultPart('call-1', [
     new LanguageModelTextPart('first'),
     new LanguageModelDataPart(new TextEncoder().encode('ephemeral'), 'cache_control'),
+    new LanguageModelDataPart(new TextEncoder().encode('provider metadata'), 'application/vnd.provider.metadata'),
     new LanguageModelDataPart(new TextEncoder().encode('second'), 'text/plain')
   ]);
 
@@ -69,9 +70,10 @@ test('omits cache control metadata from tool results', () => {
   }]);
 });
 
-test('preserves an empty tool result when it only contains cache control metadata', () => {
+test('preserves an empty tool result when it only contains provider metadata', () => {
   const result = new LanguageModelToolResultPart('call-2', [
-    new LanguageModelDataPart(new TextEncoder().encode('ephemeral'), 'cache_control')
+    new LanguageModelDataPart(new TextEncoder().encode('ephemeral'), 'cache_control'),
+    new LanguageModelDataPart(new TextEncoder().encode('provider metadata'), 'application/vnd.provider.metadata')
   ]);
 
   assert.deepEqual(toOllamaMessages([{ role: 1, content: [result] }]), [{
@@ -81,12 +83,47 @@ test('preserves an empty tool result when it only contains cache control metadat
   }]);
 });
 
-test('keeps the existing fallback for unknown tool result content', () => {
-  const result = new LanguageModelToolResultPart('call-3', [{ status: 'ok' }]);
+test('preserves text, supported JSON data, and JSON-compatible tool result content', () => {
+  const result = new LanguageModelToolResultPart('call-3', [
+    new LanguageModelTextPart('first'),
+    new LanguageModelDataPart(new TextEncoder().encode('second'), 'text/plain'),
+    new LanguageModelDataPart(new TextEncoder().encode('{"status":"ok"}'), 'application/json; charset=utf-8'),
+    new LanguageModelDataPart(new TextEncoder().encode('{"vendor":true}'), 'application/vnd.example+json'),
+    { legacy: true }
+  ]);
 
   assert.deepEqual(toOllamaMessages([{ role: 1, content: [result] }]), [{
     role: 'tool',
-    content: '{"status":"ok"}',
+    content: 'first\nsecond\n{"status":"ok"}\n{"vendor":true}\n{"legacy":true}',
     tool_call_id: 'call-3'
+  }]);
+});
+
+test('preserves image data on regular chat messages', () => {
+  const imageBytes = Uint8Array.from([0, 1, 2, 3]);
+
+  assert.deepEqual(toOllamaMessages([{
+    role: 1,
+    content: [new LanguageModelDataPart(imageBytes, 'image/png')]
+  }]), [{
+    role: 'user',
+    content: '',
+    images: [Buffer.from(imageBytes).toString('base64')],
+    tool_calls: undefined
+  }]);
+});
+
+test('forwards image data from tool results on the corresponding tool message', () => {
+  const imageBytes = Uint8Array.from([0, 1, 2, 3]);
+  const result = new LanguageModelToolResultPart('call-4', [
+    new LanguageModelTextPart('browser screenshot'),
+    new LanguageModelDataPart(imageBytes, 'image/png')
+  ]);
+
+  assert.deepEqual(toOllamaMessages([{ role: 1, content: [result] }]), [{
+    role: 'tool',
+    content: 'browser screenshot',
+    images: [Buffer.from(imageBytes).toString('base64')],
+    tool_call_id: 'call-4'
   }]);
 });

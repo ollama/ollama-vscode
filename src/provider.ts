@@ -22,6 +22,18 @@ import {
   recommendedReplacement
 } from './recommendations';
 import { createChatFetch } from './chatFetch';
+import {
+  formatContextLength,
+  isMachineContextTooSmall,
+  minimumMachineContextLength,
+  waitForMachineContextCheckBeforeStreaming,
+  waitForMachineContextLength
+} from './contextLength';
+import {
+  OllamaDiagnosticsConfigurationTracker,
+  type OllamaDiagnosticsConfiguration,
+  type OllamaDiagnosticsConfigurationSelection
+} from './diagnostics';
 
 interface OllamaProviderConfiguration {
   url: string;
@@ -35,6 +47,7 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
   model: string;
   url: string;
   headers: Record<string, string>;
+  local: boolean;
   useOpenWebUIProxy: boolean;
   openWebUIApiKey: string;
   recommendedReplacement?: string;
@@ -42,6 +55,9 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
 
 const defaultOllamaURL = 'http://127.0.0.1:11434';
 const recommendationTimeoutMS = 2000;
+const initialContextCheckDelayMS = 25;
+const maxContextCheckDelayMS = 500;
+const machineContextCheckTimeoutMS = 1000;
 const fallbackContextWindow = 32768;
 const defaultMaxOutputTokens = 4096;
 const defaultCharsPerToken = 4;
@@ -148,6 +164,8 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   private readonly tokenCounts = new CalibratedTokenEstimator();
   private readonly outdatedModelWarnings = new OutdatedModelWarningTracker();
+  private readonly machineContextWarnings = new Set<string>();
+  private readonly diagnosticsConfigurations = new OllamaDiagnosticsConfigurationTracker();
   readonly onDidChangeLanguageModelChatInformation = this.changeEmitter.event;
 
   constructor(private readonly output?: vscode.OutputChannel) {}
@@ -161,11 +179,18 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     this.changeEmitter.dispose();
   }
 
+  selectDiagnosticsConfiguration(
+    workspaceConfiguration: OllamaDiagnosticsConfiguration
+  ): OllamaDiagnosticsConfigurationSelection {
+    return this.diagnosticsConfigurations.select(workspaceConfiguration);
+  }
+
   async provideLanguageModelChatInformation(
     options: vscode.PrepareLanguageModelChatModelOptions,
     token: vscode.CancellationToken
   ): Promise<OllamaLanguageModel[]> {
     const configuration = getConfiguration(options);
+    this.diagnosticsConfigurations.recordResolved(configuration);
     const disposables: vscode.Disposable[] = [];
     const request = createFetch(token, disposables);
     const proxyUrl = applyOpenWebUIProxyPrefix(configuration.url, configuration.useOpenWebUIProxy);
@@ -257,21 +282,60 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       fetch: createFetch(token, disposables, chatFetch.fetch)
     });
     const tools = toOllamaTools(options.tools);
+    this.diagnosticsConfigurations.recordUsed(model);
     this.output?.appendLine(`Sending chat request to ${model.model} at ${proxyUrl}.`);
     let requestSucceeded = false;
+    let machineContextSource: vscode.CancellationTokenSource | undefined;
 
     try {
       let promptTokenCount: number | undefined;
       let completionTokenCount: number | undefined;
-      const stream = await ollama.chat({
+      let chatRequestSettled = false;
+      const streamRequest = ollama.chat({
         model: model.model,
         messages: ollamaMessages,
         stream: true,
         tools: tools.length > 0 ? tools : undefined,
         options: options.modelOptions ? { ...options.modelOptions } : undefined
       } as ChatRequest & { stream: true });
+      void streamRequest.then(
+        () => { chatRequestSettled = true; },
+        () => { chatRequestSettled = true; }
+      );
+      let contextLengthCheck: Promise<void> | undefined;
+      if (model.local) {
+        machineContextSource = new vscode.CancellationTokenSource();
+        const cancelMachineContextCheck = token.onCancellationRequested(() => machineContextSource?.cancel());
+        disposables.push(machineContextSource, cancelMachineContextCheck);
+        if (token.isCancellationRequested) {
+          machineContextSource.cancel();
+        }
+        const contextOllama = new Ollama({
+          host: proxyUrl,
+          headers: proxyHeaders,
+          fetch: createFetch(machineContextSource.token, disposables)
+        });
+        contextLengthCheck = this.checkMachineContextLength(
+          contextOllama,
+          model,
+          () => chatRequestSettled,
+          machineContextSource.token
+        );
+      }
+
+      const stream = await streamRequest;
       const streamDisposable = token.onCancellationRequested(() => stream.abort());
       disposables.push(streamDisposable);
+      if (contextLengthCheck && machineContextSource) {
+        const contextSource = machineContextSource;
+        // Hold buffered chunks briefly while confirming the loaded model's context.
+        await waitForMachineContextCheckBeforeStreaming(
+          contextLengthCheck,
+          () => waitForContextCheck(machineContextCheckTimeoutMS, contextSource.token).then(() => undefined),
+          () => contextSource.cancel()
+        );
+        contextSource.cancel();
+      }
 
       for await (const chunk of stream as AsyncIterable<ChatResponse>) {
         const response = chunk as OllamaChatResponse;
@@ -306,6 +370,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     } catch (error) {
       throw await this.handleChatError(model, error);
     } finally {
+      machineContextSource?.cancel();
       this.outdatedModelWarnings.finishRequest(warningRequest, requestSucceeded);
       disposeAll(disposables);
     }
@@ -341,6 +406,74 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     }
 
     return this.userFacingError(error);
+  }
+
+  private async checkMachineContextLength(
+    ollama: Ollama,
+    model: OllamaLanguageModel,
+    isChatRequestSettled: () => boolean,
+    token: vscode.CancellationToken
+  ): Promise<void> {
+    if (!model.local) {
+      return;
+    }
+
+    let contextLength: number | undefined;
+    let nextDelayMS = initialContextCheckDelayMS;
+    try {
+      contextLength = await waitForMachineContextLength(
+        () => ollama.ps().then(processes => processes.models),
+        model.model,
+        isChatRequestSettled,
+        async () => {
+          const completed = await waitForContextCheck(nextDelayMS, token);
+          nextDelayMS = Math.min(nextDelayMS * 2, maxContextCheckDelayMS);
+          return completed;
+        }
+      );
+    } catch (error) {
+      if (token.isCancellationRequested) {
+        return;
+      }
+      this.output?.appendLine(`Could not check Ollama's allocated context length: ${formatError(error)}`);
+      return;
+    }
+
+    if (contextLength === undefined) {
+      return;
+    }
+
+    const warningKey = model.url;
+    if (!isMachineContextTooSmall(contextLength)) {
+      this.machineContextWarnings.delete(warningKey);
+      return;
+    }
+    if (this.machineContextWarnings.has(warningKey)) {
+      return;
+    }
+    this.machineContextWarnings.add(warningKey);
+
+    const allocated = formatContextLength(contextLength);
+    const minimum = formatContextLength(minimumMachineContextLength);
+    this.output?.appendLine(
+      `Ollama allocated a ${allocated} context window for ${model.model}; at least ${minimum} is recommended.`
+    );
+
+    const learnHow = 'Learn how';
+    void vscode.window.showWarningMessage(
+      `Ollama is using a ${allocated} context window. Set it to at least ${minimum} in Ollama Settings, reload this window, then resend your prompt.`,
+      learnHow
+    ).then(selected => {
+      if (selected === learnHow) {
+        return vscode.env.openExternal(vscode.Uri.parse('https://docs.ollama.com/context-length'));
+      }
+      return undefined;
+    }, error => {
+      this.output?.appendLine(`Could not show context length guidance: ${formatError(error)}`);
+      return undefined;
+    }).then(undefined, error => {
+      this.output?.appendLine(`Could not open context length guidance: ${formatError(error)}`);
+    });
   }
 
   private userFacingError(error: unknown): Error {
@@ -426,6 +559,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       model: name,
       url: configuration.url,
       headers: configuration.headers,
+      local: !isRemoteModel(model) && !isCloudModel(name),
       useOpenWebUIProxy: configuration.useOpenWebUIProxy,
       openWebUIApiKey: configuration.openWebUIApiKey,
       recommendedReplacement: replacement
@@ -498,6 +632,34 @@ async function showWarningMessageUntilCancelled<T extends string>(
       selected => finish({ kind: 'selection', selected }),
       error => finish({ kind: 'error', error })
     );
+  });
+}
+
+function waitForContextCheck(
+  delayMS: number,
+  token: vscode.CancellationToken
+): Promise<boolean> {
+  if (token.isCancellationRequested) {
+    return Promise.resolve(false);
+  }
+
+  return new Promise(resolve => {
+    let settled = false;
+    let cancellation: vscode.Disposable | undefined;
+    const timer = setTimeout(() => finish(true), delayMS);
+    const finish = (completed: boolean) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      cancellation?.dispose();
+      resolve(completed);
+    };
+    cancellation = token.onCancellationRequested(() => finish(false));
+    if (settled) {
+      cancellation.dispose();
+    }
   });
 }
 

@@ -3,7 +3,7 @@
   "displayName": "Ollama",
   "description": "Ollama language model provider for VS Code.",
   "publisher": "Ollama",
-  "version": "0.0.6",
+  "version": "0.0.8",
   "icon": "images/icon.png",
   "license": "MIT",
   "repository": {
@@ -11,12 +11,18 @@
     "url": "https://github.com/tpedretti/ollama-vscode-openwebui.git"
   },
   "engines": {
-    "vscode": "^1.120.0"
+    "vscode": "^1.127.0"
   },
   "categories": [
-    "AI",
-    "Machine Learning",
-    "Other"
+    "AI"
+  ],
+  "keywords": [
+    "ollama",
+    "gemma",
+    "kimi-k3",
+    "glm-5.2",
+    "copilot",
+    "agent"
   ],
   "activationEvents": [
     "onStartupFinished",
@@ -64,7 +70,7 @@
               "type": "string",
               "title": "Open WebUI API Key",
               "default": "",
-              "description": "API key for Open WebUI authentication (Bearer token). Required when Use Open WebUI Proxy is enabled."
+              "description": "API key for Open WebUI authentication (Bearer token). Get it from Open WebUI → Settings → Account → API Keys."
             }
           }
         }
@@ -90,12 +96,12 @@
           "ollama.useOpenWebUIProxy": {
             "type": "boolean",
             "default": false,
-            "description": "Use Open WebUI Ollama API Proxy? When enabled, all requests are routed through Open WebUI's /ollama/ proxy endpoints. Requires an Open WebUI instance running with Ollama backend configured."
+            "description": "Use Open WebUI Ollama API Proxy — routes requests through /ollama/ prefix with Bearer auth."
           },
           "ollama.openWebUIApiKey": {
             "type": "string",
             "default": "",
-            "description": "Open WebUI API key (Bearer token). Obtained from Settings > Account in Open WebUI. Required when Use Open WebUI Proxy is enabled."
+            "description": "Open WebUI API key (Bearer token). Get it from Open WebUI → Settings → Account → API Keys."
           }
         }
       }
