@@ -99,7 +99,7 @@ test('waits for delayed response headers within the chat timeout', async () => {
       response.end('{"done":true}\n');
     }, 75);
   }, async url => {
-    const transport = createChatFetch();
+    const transport = createChatFetch(1000);
     try {
       const response = await transport.fetch(`${url}/api/chat`, {
         method: 'POST',
@@ -195,7 +195,7 @@ test('links VS Code cancellation to the chat request', async () => {
   }, async url => {
     const source = cancellationTokenSource();
     const disposables = [];
-    const transport = createChatFetch();
+    const transport = createChatFetch(1000);
     const request = createFetch(source.token, disposables, transport.fetch);
 
     try {
