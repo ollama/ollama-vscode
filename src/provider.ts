@@ -114,6 +114,8 @@ interface OllamaChatResponse extends Partial<Omit<ChatResponse, 'message'>> {
     tool_calls?: OllamaToolCall[];
   };
   done?: boolean;
+  status?: string;
+  done_reason?: string;
 }
 
 interface OllamaErrorResponse {
@@ -246,6 +248,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     this.output?.appendLine(`Sending chat request to ${model.model} at ${model.url}.`);
     let requestSucceeded = false;
     let machineContextSource: vscode.CancellationTokenSource | undefined;
+    let streamCompleted = false;
 
     try {
       let promptTokenCount: number | undefined;
@@ -299,6 +302,9 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
 
       for await (const chunk of stream as AsyncIterable<ChatResponse>) {
         const response = chunk as OllamaChatResponse;
+        if (response.done || response.status === 'success' || response.done_reason) {
+          streamCompleted = true;
+        }
         if (typeof chunk.prompt_eval_count === 'number' && chunk.prompt_eval_count >= 0) {
           promptTokenCount = chunk.prompt_eval_count;
         }
@@ -328,6 +334,10 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       }
       requestSucceeded = true;
     } catch (error) {
+      if (streamCompleted && isMissingStreamCompletionError(error)) {
+        requestSucceeded = true;
+        return;
+      }
       throw await this.handleChatError(model, error);
     } finally {
       machineContextSource?.cancel();
@@ -523,6 +533,11 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       recommendedReplacement: replacement
     };
   }
+}
+
+export function isMissingStreamCompletionError(error: unknown): boolean {
+  return error instanceof Error
+    && error.message === 'Did not receive done or success response in stream.';
 }
 
 /**
