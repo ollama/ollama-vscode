@@ -328,6 +328,11 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       }
       requestSucceeded = true;
     } catch (error) {
+      // A cancelled request is not a failure.
+      if (token.isCancellationRequested && isAbortedRequestError(error)) {
+        this.output?.appendLine(`Chat request to ${model.model} was cancelled.`);
+        throw new vscode.CancellationError();
+      }
       throw await this.handleChatError(model, error);
     } finally {
       machineContextSource?.cancel();
@@ -890,6 +895,21 @@ function isAbortError(error: unknown): boolean {
     && error !== null
     && 'name' in error
     && error.name === 'AbortError';
+}
+
+// An abort reaches the fetch as a terminated TypeError, and either shape can arrive
+// wrapped as the cause of another error.
+export function isAbortedRequestError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+  if (isAbortError(error)) {
+    return true;
+  }
+  if (error instanceof TypeError && error.message === 'terminated') {
+    return true;
+  }
+  return 'cause' in error && isAbortedRequestError((error as { cause: unknown }).cause);
 }
 
 function isCloudModel(model: string): boolean {
