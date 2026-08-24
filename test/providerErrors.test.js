@@ -28,12 +28,38 @@ Module._load = function (request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 
-let isAbortedRequestError;
+let isAbortedRequestError, isToolCallParseError, OllamaAPIError;
 try {
-  ({ isAbortedRequestError } = require('../out/provider'));
+  ({ isAbortedRequestError, isToolCallParseError, OllamaAPIError } = require('../out/provider'));
 } finally {
   Module._load = originalLoad;
 }
+
+function apiError(status, responseError) {
+  return new OllamaAPIError(
+    `Ollama /api/chat failed with HTTP ${status}: ${responseError}`,
+    status,
+    '/api/chat',
+    responseError
+  );
+}
+
+// The exact payload Ollama rejected: a stray quote after the empty array.
+const realParseError = `error parsing tool call: raw='{"command":"pytest -q","requestFileValidationCheck":[]","requestUnsandboxedExecution":false}', err=invalid character '"' after object key:value pair`;
+
+test('classifies Ollama\'s tool-call parse rejection as retryable', () => {
+  assert.equal(isToolCallParseError(apiError(500, realParseError)), true);
+});
+
+test('does not retry other server errors', () => {
+  assert.equal(isToolCallParseError(apiError(500, 'model requires more system memory')), false);
+});
+
+test('does not retry client errors or non-API errors', () => {
+  assert.equal(isToolCallParseError(apiError(404, 'model not found')), false);
+  assert.equal(isToolCallParseError(new TypeError('terminated')), false);
+  assert.equal(isToolCallParseError(undefined), false);
+});
 
 test('recognizes a DOM-style AbortError', () => {
   const error = new Error('This operation was aborted');

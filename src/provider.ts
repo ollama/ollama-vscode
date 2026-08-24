@@ -54,6 +54,8 @@ const recommendationTimeoutMS = 2000;
 const initialContextCheckDelayMS = 25;
 const maxContextCheckDelayMS = 500;
 const machineContextCheckTimeoutMS = 1000;
+// A rejected tool call is discarded before streaming begins, so a retry repeats no work.
+const maxToolCallParseRetries = 2;
 const fallbackContextWindow = 32768;
 const defaultMaxOutputTokens = 4096;
 const defaultCharsPerToken = 4;
@@ -121,7 +123,7 @@ interface OllamaErrorResponse {
   signin_url?: string;
 }
 
-class OllamaAPIError extends Error {
+export class OllamaAPIError extends Error {
   constructor(
     message: string,
     readonly status: number,
@@ -251,13 +253,13 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       let promptTokenCount: number | undefined;
       let completionTokenCount: number | undefined;
       let chatRequestSettled = false;
-      const streamRequest = ollama.chat({
+      const streamRequest = this.startChatStream(ollama, {
         model: model.model,
         messages: ollamaMessages,
         stream: true,
         tools: tools.length > 0 ? tools : undefined,
         options: options.modelOptions ? { ...options.modelOptions } : undefined
-      } as ChatRequest & { stream: true });
+      } as ChatRequest & { stream: true }, model, token);
       void streamRequest.then(
         () => { chatRequestSettled = true; },
         () => { chatRequestSettled = true; }
@@ -349,6 +351,30 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     return this.tokenCounts.count(model.id, input);
   }
 
+  // Resolves once the response headers pass, before any body is consumed.
+  private async startChatStream(
+    ollama: Ollama,
+    request: ChatRequest & { stream: true },
+    model: OllamaLanguageModel,
+    token: vscode.CancellationToken
+  ) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await ollama.chat(request);
+      } catch (error) {
+        const retryable = isToolCallParseError(error)
+          && attempt <= maxToolCallParseRetries
+          && !token.isCancellationRequested;
+        if (!retryable) {
+          throw error;
+        }
+        this.output?.appendLine(
+          `${model.model} returned an unparseable tool call; retrying (${attempt} of ${maxToolCallParseRetries}).`
+        );
+      }
+    }
+  }
+
   private async handleChatError(model: OllamaLanguageModel, error: unknown): Promise<Error> {
     this.output?.appendLine(`Ollama request failed for ${model.model}: ${formatError(error)}`);
 
@@ -368,6 +394,12 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       }
 
       return new Error(message);
+    }
+
+    if (isToolCallParseError(error)) {
+      return new Error(
+        `${model.model} produced a tool call that could not be parsed, and retrying did not help. Try again, or use a different model for tool-calling requests.`
+      );
     }
 
     return this.userFacingError(error);
@@ -895,6 +927,12 @@ function isAbortError(error: unknown): boolean {
     && error !== null
     && 'name' in error
     && error.name === 'AbortError';
+}
+
+export function isToolCallParseError(error: unknown): boolean {
+  return error instanceof OllamaAPIError
+    && error.status === 500
+    && /parsing tool call/i.test(error.responseError ?? error.message);
 }
 
 // An abort reaches the fetch as a terminated TypeError, and either shape can arrive
