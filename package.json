@@ -8,7 +8,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ollama/ollama-vscode.git"
+    "url": "https://github.com/tpedretti/ollama-vscode-openwebui.git"
   },
   "engines": {
     "vscode": "^1.127.0"
@@ -59,6 +59,18 @@
               "additionalProperties": {
                 "type": "string"
               }
+            },
+            "useOpenWebUIProxy": {
+              "type": "boolean",
+              "title": "Use Open WebUI Proxy",
+              "default": false,
+              "description": "Route requests through Open WebUI's Ollama API Proxy (/ollama/ prefix)."
+            },
+            "openWebUIApiKey": {
+              "type": "string",
+              "title": "Open WebUI API Key",
+              "default": "",
+              "description": "API key for Open WebUI authentication (Bearer token). Get it from Open WebUI → Settings → Account → API Keys."
             }
           }
         }
@@ -80,6 +92,16 @@
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "ollama.useOpenWebUIProxy": {
+            "type": "boolean",
+            "default": false,
+            "description": "Use Open WebUI Ollama API Proxy — routes requests through /ollama/ prefix with Bearer auth."
+          },
+          "ollama.openWebUIApiKey": {
+            "type": "string",
+            "default": "",
+            "description": "Open WebUI API key (Bearer token). Get it from Open WebUI → Settings → Account → API Keys."
           }
         }
       }

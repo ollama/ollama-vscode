@@ -20,6 +20,20 @@ Configure the endpoint and optional request headers in VS Code settings:
 }
 ```
 
+### Open WebUI Proxy Mode
+
+To route requests through an Open WebUI instance using its Ollama API Proxy, enable:
+
+```json
+{
+  "ollama.endpoint": "http://127.0.0.1:3000",
+  "ollama.useOpenWebUIProxy": true,
+  "ollama.openWebUIApiKey": "your-api-key-here"
+}
+```
+
+When enabled, the extension automatically prepends `/ollama` to your endpoint URL and injects a Bearer token into every request. See the README for more details.
+
 VS Code can also pass provider configuration through `chatLanguageModels.json`:
 
 ```json
@@ -29,7 +43,9 @@ VS Code can also pass provider configuration through `chatLanguageModels.json`:
     "name": "Ollama",
     "url": "http://127.0.0.1:11434",
     "models": ["qwen3.6"],
-    "headers": {}
+    "headers": {},
+    "useOpenWebUIProxy": false,
+    "openWebUIApiKey": ""
   }
 ]
 ```

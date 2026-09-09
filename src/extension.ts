@@ -31,6 +31,19 @@ async function diagnoseModels(output: vscode.OutputChannel, provider: OllamaLang
   output.show(true);
   output.appendLine('--- Diagnostics ---');
 
+  // Open WebUI proxy status reporting
+  const settings = vscode.workspace.getConfiguration('ollama');
+  const endpoint = settings.get<string>('endpoint', defaultOllamaURL) || defaultOllamaURL;
+  const useOpenWebUIProxy = settings.get<boolean>('useOpenWebUIProxy', false);
+  const openWebUIApiKey = settings.get<string>('openWebUIApiKey', '');
+  output.appendLine(`Ollama endpoint: ${endpoint}`);
+  if (useOpenWebUIProxy) {
+    const maskedKey = openWebUIApiKey ? openWebUIApiKey.slice(0, 4) + '***' : '(not set — proxy may fail without an API key)';
+    output.appendLine(`Open WebUI Proxy: enabled (key: ${maskedKey})`);
+  } else {
+    output.appendLine('Open WebUI Proxy: disabled (direct Ollama)');
+  }
+
   const allVSCodeModels = await vscode.lm.selectChatModels();
   output.appendLine(`VS Code returned ${allVSCodeModels.length} total language model(s).`);
   for (const model of allVSCodeModels) {
@@ -51,16 +64,50 @@ async function inspectDirectOllamaModels(
 ): Promise<void> {
   const settings = vscode.workspace.getConfiguration('ollama');
   const workspaceEndpoint = settings.get<string>('endpoint', defaultOllamaURL) || defaultOllamaURL;
+
+  // Open WebUI proxy support — read settings for proxy toggle and key
+  const useOpenWebUIProxy = settings.get<boolean>('useOpenWebUIProxy', false);
+  const openWebUIApiKey = settings.get<string>('openWebUIApiKey', '');
+
   const selected = provider.selectDiagnosticsConfiguration({
     url: workspaceEndpoint,
     headers: getConfiguredHeaders(settings)
   });
-  const { url: endpoint, headers } = selected.configuration;
+
+  // Use 'let' so we can rewrite endpoint if proxy is enabled
+  let endpoint = selected.configuration.url;
+  let headers = { ...selected.configuration.headers };
+
   output.appendLine(
     `Direct Ollama API is inspecting ${configurationSourceLabel(selected.source)} at ${endpoint}.`
   );
+
+  // Open WebUI: rewrite URL to prepend /ollama prefix
+  if (useOpenWebUIProxy) {
+    endpoint = endpoint.replace(/\/+$/, '') + '/ollama';
+  }
+
+  // Open WebUI: inject Bearer auth headers when proxy is enabled
+  if (useOpenWebUIProxy && openWebUIApiKey) {
+    headers['Authorization'] = `Bearer ${openWebUIApiKey}`;
+    headers['Content-Type'] = 'application/json';
+  }
+
   const source = new vscode.CancellationTokenSource();
   const disposables: vscode.Disposable[] = [source];
+  const headers = getConfiguredHeaders(settings);
+
+  // If Open WebUI proxy is enabled, inject the Bearer auth header
+  if (useOpenWebUIProxy && openWebUIApiKey) {
+    headers['Authorization'] = `Bearer ${openWebUIApiKey}`;
+    headers['Content-Type'] = 'application/json';
+  }
+
+  const ollama = new Ollama({
+    host: endpoint,
+    headers,
+    fetch: createFetch(source.token, disposables)
+  });
   const ollama = new Ollama(ollamaDiagnosticsClientOptions(
     endpoint,
     headers,
