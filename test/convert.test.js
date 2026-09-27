@@ -49,8 +49,9 @@ Module._load = function(request, parent, isMain) {
 };
 
 let toOllamaMessages;
+let toOllamaTools;
 try {
-  ({ toOllamaMessages } = require('../out/convert'));
+  ({ toOllamaMessages, toOllamaTools } = require('../out/convert'));
 } finally {
   Module._load = originalLoad;
 }
@@ -127,3 +128,111 @@ test('forwards image data from tool results on the corresponding tool message', 
     tool_call_id: 'call-4'
   }]);
 });
+
+test('returns an empty array when tools is undefined or empty', () => {
+  assert.deepEqual(toOllamaTools(undefined), []);
+  assert.deepEqual(toOllamaTools([]), []);
+});
+
+test('converts tools with custom inputSchema', () => {
+  const tools = [
+    {
+      name: 'get_weather',
+      description: 'Get current weather',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          location: { type: 'string', description: 'City name' }
+        },
+        required: ['location']
+      }
+    }
+  ];
+
+  assert.deepEqual(toOllamaTools(tools), [
+    {
+      type: 'function',
+      function: {
+        name: 'get_weather',
+        description: 'Get current weather',
+        parameters: {
+          type: 'object',
+          properties: {
+            location: { type: 'string', description: 'City name' }
+          },
+          required: ['location']
+        }
+      }
+    }
+  ]);
+});
+
+test('supplies default empty object schema when inputSchema is undefined', () => {
+  const tools = [
+    {
+      name: 'get_time',
+      description: 'Get current time'
+    }
+  ];
+
+  assert.deepEqual(toOllamaTools(tools), [
+    {
+      type: 'function',
+      function: {
+        name: 'get_time',
+        description: 'Get current time',
+        parameters: {
+          type: 'object',
+          properties: {}
+        }
+      }
+    }
+  ]);
+});
+
+test('converts a list of mixed tools with and without inputSchema', () => {
+  const tools = [
+    {
+      name: 'tool_without_schema',
+      description: 'Tool without schema'
+    },
+    {
+      name: 'tool_with_schema',
+      description: 'Tool with schema',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' }
+        }
+      }
+    }
+  ];
+
+  assert.deepEqual(toOllamaTools(tools), [
+    {
+      type: 'function',
+      function: {
+        name: 'tool_without_schema',
+        description: 'Tool without schema',
+        parameters: {
+          type: 'object',
+          properties: {}
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'tool_with_schema',
+        description: 'Tool with schema',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' }
+          }
+        }
+      }
+    }
+  ]);
+});
+

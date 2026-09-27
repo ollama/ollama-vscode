@@ -59,7 +59,10 @@ export function toOllamaTools(tools: readonly vscode.LanguageModelChatTool[] | u
     function: {
       name: tool.name,
       description: tool.description,
-      parameters: tool.inputSchema ?? {}
+      parameters: tool.inputSchema ?? {
+          type: 'object',
+          properties: {}
+      }
     }
   }));
 }
