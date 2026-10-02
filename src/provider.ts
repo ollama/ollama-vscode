@@ -35,6 +35,7 @@ import {
   type OllamaDiagnosticsConfiguration,
   type OllamaDiagnosticsConfigurationSelection
 } from './diagnostics';
+import { inferenceTimeoutMilliseconds } from './inferenceTimeout';
 
 interface OllamaProviderConfiguration {
   url: string;
@@ -241,7 +242,10 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     }
 
     const disposables: vscode.Disposable[] = [];
-    const chatFetch = createChatFetch();
+    const inferenceTimeout = inferenceTimeoutMilliseconds(
+      vscode.workspace.getConfiguration('ollama').get('inferenceTimeoutMinutes')
+    );
+    const chatFetch = createChatFetch(inferenceTimeout);
     disposables.push(chatFetch);
     const ollama = new Ollama({
       host: model.url,
@@ -342,7 +346,8 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       if (usagePart) {
         progress.report(usagePart);
       }
-      if (promptTokenCount !== undefined) {
+      // Tool definitions contribute prompt tokens that the text estimator does not count.
+      if (promptTokenCount !== undefined && tools.length === 0) {
         this.tokenCounts.record(model.id, messages, promptTokenCount);
       }
       requestSucceeded = true;
@@ -467,7 +472,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     warningRequest: OutdatedModelWarningRequest,
     token: vscode.CancellationToken
   ): Promise<boolean> {
-    if (!isOutdatedAgentModel(model.model)) {
+    if (!isOutdatedAgentModel(model.name)) {
       return true;
     }
     if (this.outdatedModelWarnings.hasShown(warningRequest, model.model)) {
@@ -481,7 +486,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     const chooseAnotherModel = 'Choose another model';
     const continueAnyway = 'Continue anyway';
     const outcome = await showWarningMessageUntilCancelled(
-      `${model.model} may not work as reliably with VS Code agent tools.${guidance}`,
+      `${model.name} may not work as reliably with VS Code agent tools.${guidance}`,
       [chooseAnotherModel, continueAnyway],
       token
     );
@@ -521,6 +526,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   ): OllamaLanguageModel {
     const capabilities = mergedCapabilities(model.capabilities, show?.capabilities);
     const name = model.name;
+    const id = modelIdentifier(model);
     const { maxInputTokens, maxOutputTokens } = modelTokenLimits(
       model,
       show,
@@ -528,7 +534,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     );
 
     return {
-      id: name,
+      id,
       name,
       family: modelFamily(model, show),
       tooltip: recommended ? 'Recommended' : name,
@@ -539,10 +545,10 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
         toolCalling: hasCapability(capabilities, 'tools', 'tool'),
         imageInput: hasCapability(capabilities, 'vision', 'image')
       },
-      model: name,
+      model: id,
       url: configuration.url,
       headers: configuration.headers,
-      local: !isRemoteModel(model) && !isCloudModel(name),
+      local: !isRemoteModel(model) && !isCloudModel(id),
       recommendedReplacement: replacement
     };
   }
@@ -713,8 +719,9 @@ function selectConfiguredModels(
   configuredModels: readonly string[],
   availableModels: readonly OllamaTagsModel[]
 ): OllamaTagsModel[] {
+  const byID = new Map(availableModels.map(model => [modelIdentifier(model), model]));
   const byName = new Map(availableModels.map(model => [model.name, model]));
-  return configuredModels.map(name => byName.get(name) ?? { name });
+  return configuredModels.map(name => byID.get(name) ?? byName.get(name) ?? { name });
 }
 
 async function hydrateModels(
@@ -723,8 +730,13 @@ async function hydrateModels(
 ): Promise<Array<{ model: OllamaTagsModel; show?: OllamaShowResponse }>> {
   return Promise.all(models.map(async model => ({
     model,
-    show: shouldHydrateModel(model) ? await showModel(ollama, model.name) : undefined
+    show: shouldHydrateModel(model) ? await showModel(ollama, modelIdentifier(model)) : undefined
   })));
+}
+
+function modelIdentifier(model: OllamaTagsModel): string {
+  // Proxies may return a display name that differs from the request identifier.
+  return typeof model.model === 'string' && model.model.length > 0 ? model.model : model.name;
 }
 
 function isOllamaTagsModel(model: unknown): model is OllamaTagsModel {
@@ -940,6 +952,15 @@ class CalibratedTokenEstimator {
   }
 
   record(modelID: string, messages: readonly vscode.LanguageModelChatRequestMessage[], actual: number) {
+    // Tool history and media also contribute tokens absent from inputToText.
+    // Calibrating against those totals would inflate subsequent text estimates.
+    if (messages.some(message => message.content.some(part => !(
+      part instanceof vscode.LanguageModelTextPart
+      || (part instanceof vscode.LanguageModelDataPart && part.mimeType.startsWith('text/'))
+    )))) {
+      return;
+    }
+
     const texts = messages.map(message => inputToText(message));
     const text = texts.join('\n');
     if (text.length === 0 || actual <= 0) {

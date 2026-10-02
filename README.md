@@ -83,3 +83,8 @@ If Ollama models do not appear:
 4. Run `Ollama: Diagnose Models` and check the `Ollama` output channel.
 
 If a cloud model asks you to sign in, run `ollama signin`.
+
+If an inference request takes more than 10 minutes to begin responding, increase
+**Ollama: Inference Timeout Minutes** in VS Code Settings. The timeout only
+affects inference requests made by this extension. Cancelling Chat still stops
+the request immediately.

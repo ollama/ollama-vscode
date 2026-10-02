@@ -59,9 +59,20 @@ export function toOllamaTools(tools: readonly vscode.LanguageModelChatTool[] | u
     function: {
       name: tool.name,
       description: tool.description,
-      parameters: tool.inputSchema ?? {}
+      parameters: toolInputSchema(tool.inputSchema)
     }
   }));
+}
+
+function toolInputSchema(schema: object | undefined): object {
+  if (schema === undefined || schema === null || (
+    typeof schema === 'object' && !Array.isArray(schema) && Object.keys(schema).length === 0
+  )) {
+    // Ollama reserializes {} as { type: '', properties: null }, which its
+    // template parser rejects. Describe parameterless tools as objects.
+    return { type: 'object', properties: {} };
+  }
+  return schema;
 }
 
 function roleToOllama(role: vscode.LanguageModelChatMessageRole): string {

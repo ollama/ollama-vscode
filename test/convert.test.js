@@ -49,11 +49,26 @@ Module._load = function(request, parent, isMain) {
 };
 
 let toOllamaMessages;
+let toOllamaTools;
 try {
-  ({ toOllamaMessages } = require('../out/convert'));
+  ({ toOllamaMessages, toOllamaTools } = require('../out/convert'));
 } finally {
   Module._load = originalLoad;
 }
+
+test('preserves nonempty tool schemas including constraints and unsupported features', () => {
+  const schemas = [
+    { type: 'object', properties: { city: { type: 'string', enum: ['Toronto'] } }, required: ['city'], additionalProperties: false },
+    { anyOf: [{ type: 'object', properties: {} }, { type: 'null' }] },
+    { $ref: '#/$defs/input', $defs: { input: { type: 'object' } } },
+    { properties: { value: { type: 'string' } } },
+    { type: '', properties: null }
+  ].map(Object.freeze);
+  for (const inputSchema of schemas) {
+    const tool = Object.freeze({ name: 'example', description: 'Example tool.', inputSchema });
+    assert.equal(toOllamaTools([tool])[0].function.parameters, inputSchema);
+  }
+});
 
 test('omits cache control and unrecognized provider metadata from tool results', () => {
   const result = new LanguageModelToolResultPart('call-1', [
