@@ -21,7 +21,12 @@ export function activate(context: vscode.ExtensionContext) {
     provider,
     vscode.lm.registerLanguageModelChatProvider(ollamaVendor, provider),
     vscode.commands.registerCommand('ollama.refreshModels', () => provider.refresh()),
-    vscode.commands.registerCommand('ollama.diagnoseModels', () => diagnoseModels(output, provider))
+    vscode.commands.registerCommand('ollama.diagnoseModels', () => diagnoseModels(output, provider)),
+    vscode.workspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration('ollama.maxContextLength')) {
+        provider.refresh();
+      }
+    })
   );
 }
 
