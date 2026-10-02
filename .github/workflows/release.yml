@@ -1,0 +1,78 @@
+name: Release VSIX
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: ${{ !github.event.deleted }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Check version and prepare release notes
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { version } = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          if (process.env.GITHUB_REF_NAME !== `v${version}`) {
+            throw new Error('The tag must match the version in package.json.');
+          }
+
+          const lines = fs.readFileSync('CHANGELOG.md', 'utf8').split(/\r?\n/);
+          const start = lines.indexOf(`## ${version}`);
+          if (start === -1) {
+            throw new Error(`CHANGELOG.md is missing the ## ${version} section.`);
+          }
+          const next = lines.findIndex((line, index) => index > start && line.startsWith('## '));
+          const notes = lines.slice(start + 1, next === -1 ? lines.length : next).join('\n').trim();
+          if (!notes) {
+            throw new Error('The release notes must not be empty.');
+          }
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'release-notes.md'), `${notes}\n`);
+          fs.appendFileSync(process.env.GITHUB_ENV, `VERSION=${version}\n`);
+          NODE
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Package VSIX
+        run: npx --yes @vscode/vsce@4.0.0 package --out "$RUNNER_TEMP/ollama-vscode-$VERSION.vsix"
+
+      - name: Create draft release with VSIX
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')
+          while IFS= read -r tag; do
+            if [ "$tag" = "$GITHUB_REF_NAME" ]; then
+              echo "A release already exists for $tag. Leaving it and its assets unchanged." >&2
+              exit 1
+            fi
+          done <<< "$releases"
+
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/ollama-vscode-$VERSION.vsix" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"

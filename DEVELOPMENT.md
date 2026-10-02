@@ -107,3 +107,18 @@ code --install-extension ollama-0.0.1.vsix
 
 You can also install a VSIX from VS Code by running `Extensions: Install from
 VSIX...` from the Command Palette.
+
+## Release
+
+1. Update the version in `package.json` and `package-lock.json`, and add release
+   notes under `## <version>` in `CHANGELOG.md`. Merge these changes first.
+2. Tag the merged release commit as `v<version>` and push the tag.
+3. The **Release VSIX** workflow checks the version and release notes, runs the
+   tests, and packages that exact commit. It creates a draft GitHub release with
+   the matching changelog entry and `ollama-vscode-<version>.vsix` attached.
+4. Review the draft and publish it when ready.
+
+The workflow stops if a draft or published release already exists for that tag;
+it does not replace releases or assets. Marketplace publishing remains a separate
+step; this workflow does not publish the extension there. Tags created before
+the workflow was added need their assets attached manually.
