@@ -81,6 +81,14 @@
               "type": "string"
             }
           },
+          "ollama.thinkingLevels": {
+            "type": "object",
+            "default": {},
+            "markdownDescription": "Thinking effort overrides by exact Ollama model name, including its tag (for example, `gpt-oss:20b`: `\"low\"`). Values must be supported by that model: a named effort or a boolean to enable/disable thinking. Unset or unsupported values use the server default. Changes apply to the next request.",
+            "additionalProperties": {
+              "type": ["string", "boolean"]
+            }
+          },
           "ollama.inferenceTimeoutMinutes": {
             "type": "integer",
             "default": 10,

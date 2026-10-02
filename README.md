@@ -37,6 +37,41 @@ Local models do not require sign-in. Run `ollama signin` to use cloud models.
 
 The extension discovers models from `http://127.0.0.1:11434` by default.
 
+## Thinking effort
+
+Configure thinking effort for compatible Ollama models. Each model uses its own
+supported values; models that advertise thinking values through `/api/show`
+do not need a model-specific mapping in the extension.
+
+1. Run `ollama list` to find the exact model name, including its tag.
+2. Open the Command Palette and choose **Preferences: Open User Settings (JSON)**.
+3. Add `ollama.thinkingLevels` to your existing settings object. Replace the
+   placeholders with your model's name and a thinking value it supports:
+
+   ```json
+   {
+     "ollama.thinkingLevels": {
+       "<model-name:tag>": "<supported-level>"
+     }
+   }
+   ```
+
+4. Save the settings, select the matching Ollama model in Chat, and send a new
+   message. Changes apply to the next request; no restart is needed.
+
+Add an entry for each model you want to configure. Some models accept booleans
+(`true` or `false`); others accept named levels such as `"low"` or `"high"`.
+Use only values supported by the selected model, and do not quote booleans.
+The extension uses the values advertised by the server's `/api/show` response,
+with known-model fallbacks for older servers. Remove a model's entry to use the
+server default. Unsupported values are ignored.
+
+This setting controls the model's thinking effort. Native thinking display and
+the effort dropdown beside the Chat model picker are separate follow-ups. The
+dropdown depends on a VS Code proposed API; using a normal setting keeps this
+change compatible with stable extension APIs and avoids the
+[Marketplace restriction on proposed APIs](https://code.visualstudio.com/api/advanced-topics/using-proposed-api).
+
 ## Commands
 
 The extension adds these commands to the Command Palette:

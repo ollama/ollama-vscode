@@ -34,6 +34,11 @@ import {
   type OllamaDiagnosticsConfiguration,
   type OllamaDiagnosticsConfigurationSelection
 } from './diagnostics';
+import {
+  supportedThinkingLevel,
+  thinkingPolicy,
+  type ThinkingPolicy
+} from './thinking';
 import { inferenceTimeoutMilliseconds } from './inferenceTimeout';
 
 interface OllamaProviderConfiguration {
@@ -47,6 +52,7 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
   url: string;
   headers: Record<string, string>;
   local: boolean;
+  thinkingPolicy?: ThinkingPolicy;
   recommendedReplacement?: string;
 }
 
@@ -77,6 +83,7 @@ export interface OllamaTagsModel {
 }
 
 interface OllamaShowResponse extends Omit<ShowResponse, 'model_info'> {
+  thinking?: unknown;
   model_info?: ModelInfo;
   context_length?: number;
   max_context_length?: number;
@@ -257,12 +264,20 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     try {
       let promptTokenCount: number | undefined;
       let completionTokenCount: number | undefined;
+      const thinkingLevels = vscode.workspace.getConfiguration('ollama').get<unknown>('thinkingLevels');
+      const rawThinkingLevel = thinkingLevels && typeof thinkingLevels === 'object'
+        && !Array.isArray(thinkingLevels) && Object.hasOwn(thinkingLevels, model.model)
+        ? (thinkingLevels as Record<string, unknown>)[model.model]
+        : undefined;
+      const thinkingLevel = supportedThinkingLevel(model.thinkingPolicy, rawThinkingLevel);
+
       let chatRequestSettled = false;
       const streamRequest = ollama.chat({
         model: model.model,
         messages: ollamaMessages,
         stream: true,
         tools: tools.length > 0 ? tools : undefined,
+        think: thinkingLevel,
         options: options.modelOptions ? { ...options.modelOptions } : undefined
       } as ChatRequest & { stream: true });
       void streamRequest.then(
@@ -522,12 +537,16 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     const capabilities = mergedCapabilities(model.capabilities, show?.capabilities);
     const name = model.name;
     const id = modelIdentifier(model);
+    const family = modelFamily(model, show);
+    const policy = hasCapability(capabilities, 'thinking', 'reasoning')
+      ? thinkingPolicy(id, family, show?.thinking)
+      : undefined;
     const { maxInputTokens, maxOutputTokens } = modelTokenLimits(model, show);
 
     return {
       id,
       name,
-      family: modelFamily(model, show),
+      family,
       tooltip: recommended ? 'Recommended' : name,
       version: '1.0',
       maxInputTokens,
@@ -540,6 +559,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       url: configuration.url,
       headers: configuration.headers,
       local: !isRemoteModel(model) && !isCloudModel(id),
+      thinkingPolicy: policy,
       recommendedReplacement: replacement
     };
   }
@@ -742,6 +762,7 @@ function shouldHydrateModel(model: OllamaTagsModel): boolean {
     return true;
   }
   return model.capabilities === undefined
+    || hasCapability(model.capabilities, 'thinking', 'reasoning')
     || (sharedContextWindow(model, undefined) === undefined
       && explicitTokenLimit(model, undefined, 'input') === undefined);
 }
