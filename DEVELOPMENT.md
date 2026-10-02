@@ -89,6 +89,14 @@ VS Code can also pass provider configuration through `chatLanguageModels.json`:
 If `models` is omitted, the extension lists every model returned by `/api/tags`.
 Provider configuration from VS Code takes precedence over workspace settings.
 
+## Remote SSH
+
+For Remote SSH testing, check the extension's location with
+`Developer: Show Running Extensions`. The configured Ollama URL must be reachable
+from that machine. A local-only installation runs locally; when installed both
+locally and remotely, the remote copy is preferred. Use `Ollama: Diagnose Models`
+to verify connectivity.
+
 ## Package a VSIX
 
 Build the extension package:
