@@ -2,20 +2,21 @@
 
 ## 0.0.12
 
-### Added
+### What's new
 
-- Configure thinking effort per model using `ollama.thinkingLevels` in VS Code
-  Settings JSON. Use the exact model name, including its tag, and a value supported
-  by that model. Changes apply to the next request without restarting VS Code.
-  Unset or unsupported values keep the server default.
+- You can now set the thinking effort for each model using `ollama.thinkingLevels`
+  in VS Code Settings JSON. It applies to your next request, so you don't need to
+  restart VS Code. Use the exact model name, including its tag, and a value that
+  model supports. If you don't set one, or the value isn't supported, we'll keep
+  the server default.
   [#41](https://github.com/ollama/ollama-vscode/pull/41)
 
-Thinking effort is configured through settings in this release. A dropdown and
-native thinking-text display are not included. See the
-[setup instructions](https://github.com/ollama/ollama-vscode#thinking-effort).
+For now, this is in Settings JSON. The dropdown and showing the model's thinking
+in Chat aren't included in this release.
+[Here's how to set it up](https://github.com/ollama/ollama-vscode#thinking-effort).
 
-### Fixed
+### Fixes
 
-- Fix inflated token estimates after tool or media requests, which could cause
-  conversations to compact too early.
+- We also fixed an issue where tool or media requests could make the estimated
+  token count too high and cause conversations to compact earlier than they should.
   [#79](https://github.com/ollama/ollama-vscode/pull/79)
