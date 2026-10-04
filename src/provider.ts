@@ -11,7 +11,7 @@ import {
   Tool,
   ToolCall
 } from 'ollama';
-import { toOllamaMessages, toOllamaTools } from './convert';
+import { textSegments, toOllamaMessages, toOllamaTools } from './convert';
 import {
   isOutdatedAgentModel,
   isRecommendedModel,
@@ -953,16 +953,6 @@ function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function partToText(part: vscode.LanguageModelInputPart | unknown): string {
-  if (part instanceof vscode.LanguageModelTextPart) {
-    return part.value;
-  }
-  if (part instanceof vscode.LanguageModelDataPart && part.mimeType.startsWith('text/')) {
-    return new TextDecoder().decode(part.data);
-  }
-  return '';
-}
-
 class CalibratedTokenEstimator {
   private readonly charsPerToken = new Map<string, number>();
 
@@ -997,7 +987,7 @@ class CalibratedTokenEstimator {
 }
 
 function inputToText(input: string | vscode.LanguageModelChatRequestMessage): string {
-  return typeof input === 'string' ? input : input.content.map(partToText).join('\n');
+  return typeof input === 'string' ? input : textSegments(input.content).join('\n');
 }
 
 export function createFetch(
