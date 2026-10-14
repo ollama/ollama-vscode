@@ -3,7 +3,7 @@
   "displayName": "Ollama",
   "description": "Ollama language model provider for VS Code.",
   "publisher": "Ollama",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "icon": "images/icon.png",
   "license": "MIT",
   "repository": {
@@ -64,7 +64,7 @@
               "type": "integer",
               "minimum": 1,
               "title": "Maximum Context Length",
-              "description": "Maximum context length configured on this Ollama server. If the server uses OLLAMA_CONTEXT_LENGTH, enter the same value here."
+              "description": "Maximum context window advertised to VS Code for models running on this Ollama server. Match the server's allocated context length. Cloud models are unaffected."
             }
           }
         }
@@ -90,7 +90,15 @@
           "ollama.maxContextLength": {
             "type": "integer",
             "minimum": 1,
-            "description": "Maximum context length configured on the Ollama server. If the server uses OLLAMA_CONTEXT_LENGTH, enter the same value here. Provider configuration takes precedence when present."
+            "description": "Maximum context window advertised to VS Code for models running on your Ollama server. Match the server's allocated context length. Cloud models are unaffected. Provider configuration takes precedence when present."
+          },
+          "ollama.thinkingLevels": {
+            "type": "object",
+            "default": {},
+            "markdownDescription": "Thinking effort overrides by exact Ollama model name, including its tag (for example, `gpt-oss:20b`: `\"low\"`). Values must be supported by that model: a named effort or a boolean to enable/disable thinking. Unset or unsupported values use the server default. Changes apply to the next request.",
+            "additionalProperties": {
+              "type": ["string", "boolean"]
+            }
           },
           "ollama.inferenceTimeoutMinutes": {
             "type": "integer",

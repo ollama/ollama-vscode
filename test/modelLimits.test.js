@@ -51,6 +51,13 @@ test('does not raise an explicit input limit while applying the server cap', () 
   });
 });
 
+test('caps separate input and output limits at the shared server budget', () => {
+  assert.deepEqual(limits(undefined, 8192, 10000, 2000), {
+    maxInputTokens: 6192,
+    maxOutputTokens: 2000
+  });
+});
+
 test('keeps at least one input token for very small contexts', () => {
   assert.deepEqual(limits(1, 1), {
     maxInputTokens: 1,

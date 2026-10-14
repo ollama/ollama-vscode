@@ -49,9 +49,12 @@ const vscode = {
   CancellationTokenSource: cancellationTokenSource,
   window: { showWarningMessage: async () => undefined },
   workspace: {
-    getConfiguration: () => ({ get: (_key, fallback) => fallback })
+    getConfiguration: () => ({ get: (key, fallback) => key in settings ? settings[key] : fallback })
   }
 };
+
+let settings = {};
+test.beforeEach(() => { settings = {}; });
 
 const originalLoad = Module._load;
 Module._load = function(request, parent, isMain) {
@@ -133,6 +136,96 @@ test('token calibration accepts text data parts and low character-per-token rati
       assert.equal(await provider.provideTokenCount(model, text, token), 40);
       assert.equal(await provider.provideTokenCount({ ...model, id: 'other-model' }, text, token), 25);
     } finally {
+      provider.dispose();
+    }
+  });
+});
+
+test('applies effort settings without leaking thinking into answers or changing tool history', { timeout: 5000 }, async () => {
+  const requests = [];
+  await withServer(async (request, response) => {
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    requests.push(JSON.parse(body));
+    response.writeHead(200, { 'content-type': 'application/x-ndjson' });
+    for (const message of [
+      { thinking: 'Let ' }, { thinking: 'me think.' },
+      { content: 'Checking.', tool_calls: [{ id: 'call-1', function: { name: 'lookup', arguments: { q: 'x' } } }] }
+    ]) response.write(JSON.stringify({ message }) + '\n');
+    response.end(JSON.stringify({ done: true, prompt_eval_count: 1000, eval_count: 7 }) + '\n');
+  }, async url => {
+    const provider = new OllamaLanguageModelProvider();
+    const model = { id: 'qwen3.8:27b', name: 'qwen3.8:27b', model: 'qwen3.8:27b', url, headers: {}, local: false,
+      thinkingPolicy: { levels: [false, 'low', 'medium', 'xhigh'], defaultLevel: 'medium' } };
+    const token = cancellationTokenSource().token;
+    const user = { role: 1, content: [new LanguageModelTextPart('Check x')] };
+    const progress = collectProgress();
+    try {
+      settings.thinkingLevels = { [model.model]: 'xhigh' };
+      await provider.provideLanguageModelChatResponse(model, [user], {}, progress, token);
+      assert.deepEqual(progress.reports.map(part => part.constructor.name), [
+        'LanguageModelTextPart', 'LanguageModelToolCallPart', 'LanguageModelDataPart'
+      ]);
+      assert.equal(progress.reports[0].value, 'Checking.');
+      assert.equal(requests[0].think, 'xhigh');
+      const history = [user, { role: 2, content: progress.reports.slice(0, -1) }, {
+        role: 1, content: [new LanguageModelToolResultPart('call-1', [new LanguageModelTextPart('42')])]
+      }];
+      settings.thinkingLevels[model.model] = false;
+      await provider.provideLanguageModelChatResponse(model, history, {}, collectProgress(), token);
+      assert.equal(requests[1].think, false);
+      assert.deepEqual(requests[1].messages, [
+        { role: 'user', content: 'Check x' },
+        { role: 'assistant', content: 'Checking.',
+          tool_calls: [{ id: 'call-1', function: { name: 'lookup', arguments: { q: 'x' } } }] },
+        { role: 'tool', content: '42', tool_call_id: 'call-1' }
+      ]);
+      for (const stale of ['high', 'max', 'none']) {
+        settings.thinkingLevels[model.model] = stale;
+        await provider.provideLanguageModelChatResponse(model, [user], {}, collectProgress(), token);
+        assert.equal(Object.hasOwn(requests.at(-1), 'think'), false);
+      }
+    } finally {
+      provider.dispose();
+    }
+  });
+});
+
+test('cancelling while the server is thinking closes the request and a later chat succeeds', { timeout: 5000 }, async () => {
+  let requests = 0;
+  let closed;
+  const connectionClosed = new Promise(resolve => { closed = resolve; });
+  let started;
+  const thinkingStarted = new Promise(resolve => { started = resolve; });
+  await withServer((request, response) => {
+    request.resume();
+    response.writeHead(200, { 'content-type': 'application/x-ndjson' });
+    if (++requests === 1) {
+      response.on('close', closed);
+      response.write(JSON.stringify({ message: { thinking: 'Working' } }) + '\n', started);
+    } else {
+      response.end(JSON.stringify({ message: { content: 'Hello' }, done: true }) + '\n');
+    }
+  }, async url => {
+    const provider = new OllamaLanguageModelProvider();
+    const model = { id: 'test-model', name: 'test-model', model: 'test-model', url, headers: {}, local: false };
+    const source = cancellationTokenSource();
+    const reports = [];
+    try {
+      const cancelled = provider.provideLanguageModelChatResponse(model, [], {}, {
+        report(part) { reports.push(part); }
+      }, source.token);
+      const rejected = assert.rejects(cancelled, /abort|cancel/i);
+      await thinkingStarted;
+      source.cancel();
+      await rejected;
+      await connectionClosed;
+      assert.deepEqual(reports, []);
+      const progress = collectProgress();
+      await provider.provideLanguageModelChatResponse(model, [], {}, progress, cancellationTokenSource().token);
+      assert.equal(progress.reports[0].value, 'Hello');
+    } finally {
+      source.dispose();
       provider.dispose();
     }
   });
@@ -320,19 +413,50 @@ test('preserves older-model guidance when a server prefixes its identifier', asy
   }
 });
 
-test('recognizes cloud identifiers behind display names and preserves name-only cloud models', async () => {
+test('caps local models while preserving cloud limits for global and provider settings', async () => {
+  settings.maxContextLength = 8192;
   const tags = [
+    { name: 'local:latest' },
     { name: 'Cloud model', model: 'qwen3.8:cloud' },
-    { name: 'qwen3.8:27b-cloud' }
+    { name: 'qwen3.8:27b-cloud' },
+    { name: 'cloud-alias:latest', remote_host: 'https://ollama.com',
+      capabilities: ['tools'], model_info: { context_length: 131072 } }
   ];
-  const identifiers = ['qwen3.8:cloud', 'qwen3.8:27b-cloud'];
+  const identifiers = tags.map(model => model.model ?? model.name);
   await withModelServer(tags, identifiers, async url => {
-    const models = await discoverModels(url);
-    for (const model of models) {
-      assert.equal(model.local, false);
-      await runChatResponse(url, collectProgress(), {}, model);
+    for (const maxContextLength of [undefined, 65536]) {
+      const [local, ...cloud] = await discoverModels(url, [], { maxContextLength });
+      assert.equal(local.local, true);
+      assert.equal(local.maxInputTokens + local.maxOutputTokens, maxContextLength ?? 8192);
+      for (const model of cloud) {
+        assert.equal(model.local, false);
+        assert.equal(model.maxInputTokens, 131072 - 4096);
+        assert.equal(model.maxOutputTokens, 4096);
+        await runChatResponse(url, collectProgress(), {}, model);
+      }
     }
   });
+});
+
+test('keeps configured context within native capacity and honors smaller model allocations', async () => {
+  const tags = [{ name: 'local:latest' }];
+  for (const metadata of [
+    { parameters: 'num_ctx 131072' },
+    { modelfile: 'PARAMETER num_ctx 131072' },
+    { max_context_length: 131072 }
+  ]) {
+    await withModelServer(tags, ['local:latest'], async url => {
+      for (const maxContextLength of [undefined, 65536]) {
+        const [model] = await discoverModels(url, [], { maxContextLength });
+        assert.equal(model.maxInputTokens + model.maxOutputTokens, 8192);
+      }
+    }, { ...metadata, model_info: { 'llama.context_length': 8192 } });
+  }
+
+  await withModelServer(tags, ['local:latest'], async url => {
+    const [model] = await discoverModels(url, [], { maxContextLength: 65536 });
+    assert.equal(model.maxInputTokens + model.maxOutputTokens, 8192);
+  }, { parameters: 'num_ctx 8192', model_info: { 'llama.context_length': 131072 } });
 });
 
 test('accepts configured identifiers and display names, including models absent from tags', async () => {
@@ -369,11 +493,11 @@ test('distinguishes matching display names and prefers an exact configured ident
   });
 });
 
-async function discoverModels(url, models = []) {
+async function discoverModels(url, models = [], configuration = {}) {
   const provider = new OllamaLanguageModelProvider();
   try {
     return await provider.provideLanguageModelChatInformation(
-      { configuration: { url, models } },
+      { configuration: { url, models, ...configuration } },
       cancellationTokenSource().token
     );
   } finally {
@@ -381,7 +505,9 @@ async function discoverModels(url, models = []) {
   }
 }
 
-async function withModelServer(models, identifiers, run) {
+async function withModelServer(models, identifiers, run, show = {
+  capabilities: ['tools', 'vision'], model_info: { context_length: 131072 }
+}) {
   const requests = [];
   await withServer(async (request, response) => {
     let result;
@@ -412,7 +538,7 @@ async function withModelServer(models, identifiers, run) {
           return;
         }
         result = request.url === '/api/show'
-          ? { capabilities: ['tools', 'vision'], model_info: { context_length: 131072 } }
+          ? show
           : { message: { content: 'Hello' }, done: true };
         break;
       }
