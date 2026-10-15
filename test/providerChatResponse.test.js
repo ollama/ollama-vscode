@@ -413,19 +413,50 @@ test('preserves older-model guidance when a server prefixes its identifier', asy
   }
 });
 
-test('recognizes cloud identifiers behind display names and preserves name-only cloud models', async () => {
+test('caps local models while preserving cloud limits for global and provider settings', async () => {
+  settings.maxContextLength = 8192;
   const tags = [
+    { name: 'local:latest' },
     { name: 'Cloud model', model: 'qwen3.8:cloud' },
-    { name: 'qwen3.8:27b-cloud' }
+    { name: 'qwen3.8:27b-cloud' },
+    { name: 'cloud-alias:latest', remote_host: 'https://ollama.com',
+      capabilities: ['tools'], model_info: { context_length: 131072 } }
   ];
-  const identifiers = ['qwen3.8:cloud', 'qwen3.8:27b-cloud'];
+  const identifiers = tags.map(model => model.model ?? model.name);
   await withModelServer(tags, identifiers, async url => {
-    const models = await discoverModels(url);
-    for (const model of models) {
-      assert.equal(model.local, false);
-      await runChatResponse(url, collectProgress(), {}, model);
+    for (const maxContextLength of [undefined, 65536]) {
+      const [local, ...cloud] = await discoverModels(url, [], { maxContextLength });
+      assert.equal(local.local, true);
+      assert.equal(local.maxInputTokens + local.maxOutputTokens, maxContextLength ?? 8192);
+      for (const model of cloud) {
+        assert.equal(model.local, false);
+        assert.equal(model.maxInputTokens, 131072 - 4096);
+        assert.equal(model.maxOutputTokens, 4096);
+        await runChatResponse(url, collectProgress(), {}, model);
+      }
     }
   });
+});
+
+test('keeps configured context within native capacity and honors smaller model allocations', async () => {
+  const tags = [{ name: 'local:latest' }];
+  for (const metadata of [
+    { parameters: 'num_ctx 131072' },
+    { modelfile: 'PARAMETER num_ctx 131072' },
+    { max_context_length: 131072 }
+  ]) {
+    await withModelServer(tags, ['local:latest'], async url => {
+      for (const maxContextLength of [undefined, 65536]) {
+        const [model] = await discoverModels(url, [], { maxContextLength });
+        assert.equal(model.maxInputTokens + model.maxOutputTokens, 8192);
+      }
+    }, { ...metadata, model_info: { 'llama.context_length': 8192 } });
+  }
+
+  await withModelServer(tags, ['local:latest'], async url => {
+    const [model] = await discoverModels(url, [], { maxContextLength: 65536 });
+    assert.equal(model.maxInputTokens + model.maxOutputTokens, 8192);
+  }, { parameters: 'num_ctx 8192', model_info: { 'llama.context_length': 131072 } });
 });
 
 test('accepts configured identifiers and display names, including models absent from tags', async () => {
@@ -462,11 +493,11 @@ test('distinguishes matching display names and prefers an exact configured ident
   });
 });
 
-async function discoverModels(url, models = []) {
+async function discoverModels(url, models = [], configuration = {}) {
   const provider = new OllamaLanguageModelProvider();
   try {
     return await provider.provideLanguageModelChatInformation(
-      { configuration: { url, models } },
+      { configuration: { url, models, ...configuration } },
       cancellationTokenSource().token
     );
   } finally {
@@ -474,7 +505,9 @@ async function discoverModels(url, models = []) {
   }
 }
 
-async function withModelServer(models, identifiers, run) {
+async function withModelServer(models, identifiers, run, show = {
+  capabilities: ['tools', 'vision'], model_info: { context_length: 131072 }
+}) {
   const requests = [];
   await withServer(async (request, response) => {
     let result;
@@ -505,7 +538,7 @@ async function withModelServer(models, identifiers, run) {
           return;
         }
         result = request.url === '/api/show'
-          ? { capabilities: ['tools', 'vision'], model_info: { context_length: 131072 } }
+          ? show
           : { message: { content: 'Hello' }, done: true };
         break;
       }

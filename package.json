@@ -59,6 +59,12 @@
               "additionalProperties": {
                 "type": "string"
               }
+            },
+            "maxContextLength": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Maximum Context Length",
+              "description": "Maximum context window advertised to VS Code for models running on this Ollama server. Match the server's allocated context length. Cloud models are unaffected."
             }
           }
         }
@@ -80,6 +86,11 @@
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "ollama.maxContextLength": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum context window advertised to VS Code for models running on your Ollama server. Match the server's allocated context length. Cloud models are unaffected. Provider configuration takes precedence when present."
           },
           "ollama.thinkingLevels": {
             "type": "object",
