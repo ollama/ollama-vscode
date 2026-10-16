@@ -11,7 +11,12 @@ import {
   Tool,
   ToolCall
 } from 'ollama';
-import { toOllamaMessages, toOllamaTools } from './convert';
+import {
+  isDataPart,
+  isTextPart,
+  toOllamaMessages,
+  toOllamaTools
+} from './convert';
 import {
   isOutdatedAgentModel,
   isRecommendedModel,
@@ -1000,10 +1005,10 @@ function formatError(error: unknown): string {
 }
 
 function partToText(part: vscode.LanguageModelInputPart | unknown): string {
-  if (part instanceof vscode.LanguageModelTextPart) {
+  if (isTextPart(part)) {
     return part.value;
   }
-  if (part instanceof vscode.LanguageModelDataPart && part.mimeType.startsWith('text/')) {
+  if (isDataPart(part) && part.mimeType.startsWith('text/')) {
     return new TextDecoder().decode(part.data);
   }
   return '';
@@ -1024,8 +1029,8 @@ class CalibratedTokenEstimator {
     // Tool history and media also contribute tokens absent from inputToText.
     // Calibrating against those totals would inflate subsequent text estimates.
     if (messages.some(message => message.content.some(part => !(
-      part instanceof vscode.LanguageModelTextPart
-      || (part instanceof vscode.LanguageModelDataPart && part.mimeType.startsWith('text/'))
+      isTextPart(part)
+      || (isDataPart(part) && part.mimeType.startsWith('text/'))
     )))) {
       return;
     }

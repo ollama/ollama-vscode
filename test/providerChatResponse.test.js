@@ -78,7 +78,9 @@ for (const { name, options = {}, extraParts = [] } of [
   },
   { name: 'tool calls', extraParts: [new LanguageModelToolCallPart('call-1', 'lookup', { q: 'x' })] },
   { name: 'tool results', extraParts: [new LanguageModelToolResultPart('call-1', [new LanguageModelTextPart('result')])] },
-  { name: 'images', extraParts: [new LanguageModelDataPart(new Uint8Array([1, 2, 3]), 'image/png')] }
+  { name: 'images', extraParts: [new LanguageModelDataPart(new Uint8Array([1, 2, 3]), 'image/png')] },
+  { name: 'thinking parts', extraParts: [{ value: 'thinking', id: undefined, metadata: undefined }] },
+  { name: 'serialized text data', extraParts: [{ mimeType: 'text/plain', data: 'aGVsbG8=' }] }
 ]) {
   test(`token calibration ignores prompt overhead from ${name}`, async () => {
     let promptTokens = 1000;
@@ -117,6 +119,28 @@ for (const { name, options = {}, extraParts = [] } of [
     });
   });
 }
+
+test('counts structural text and byte data without decoding serialized data or thinking', async () => {
+  const provider = new OllamaLanguageModelProvider();
+  const model = { id: 'test-model' };
+  const token = cancellationTokenSource().token;
+  const text = 'x'.repeat(100);
+  try {
+    for (const part of [{ value: text }, { mimeType: 'text/plain', data: new TextEncoder().encode(text) }]) {
+      assert.equal(await provider.provideTokenCount(model, { role: 1, content: [part] }, token), 25);
+    }
+    for (const part of [
+      { value: text, id: undefined, metadata: undefined },
+      { $mid: 999, value: text },
+      { mimeType: 'text/plain', data: Buffer.from(text).toString('base64') },
+      new LanguageModelDataPart(Buffer.from(text).toString('base64'), 'text/plain')
+    ]) {
+      assert.equal(await provider.provideTokenCount(model, { role: 1, content: [part] }, token), 0);
+    }
+  } finally {
+    provider.dispose();
+  }
+});
 
 test('token calibration accepts text data parts and low character-per-token ratios', async () => {
   await withServer((request, response) => {
