@@ -29,6 +29,10 @@
     "onLanguageModelChatProvider:ollama-models"
   ],
   "main": "./out/extension.js",
+  "extensionKind": [
+    "workspace",
+    "ui"
+  ],
   "contributes": {
     "languageModelChatProviders": [
       {
