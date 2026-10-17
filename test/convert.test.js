@@ -128,6 +128,39 @@ test('preserves image data on regular chat messages', () => {
   }]);
 });
 
+test('concatenates adjacent assistant text fragments without adding separators', () => {
+  assert.deepEqual(toOllamaMessages([{
+    role: vscode.LanguageModelChatMessageRole.Assistant,
+    content: [
+      new LanguageModelTextPart('Hel'),
+      new LanguageModelTextPart('lo'),
+      new LanguageModelTextPart(' world')
+    ]
+  }]), [{
+    role: 'assistant',
+    content: 'Hello world',
+    images: undefined,
+    tool_calls: undefined
+  }]);
+});
+
+test('separates text data parts from adjacent text fragments', () => {
+  assert.deepEqual(toOllamaMessages([{
+    role: vscode.LanguageModelChatMessageRole.User,
+    content: [
+      new LanguageModelTextPart('Hel'),
+      new LanguageModelTextPart('lo'),
+      new LanguageModelDataPart(new TextEncoder().encode('world'), 'text/plain'),
+      new LanguageModelTextPart('!')
+    ]
+  }]), [{
+    role: 'user',
+    content: 'Hello\nworld\n!',
+    images: undefined,
+    tool_calls: undefined
+  }]);
+});
+
 test('forwards image data from tool results on the corresponding tool message', () => {
   const imageBytes = Uint8Array.from([0, 1, 2, 3]);
   const result = new LanguageModelToolResultPart('call-4', [

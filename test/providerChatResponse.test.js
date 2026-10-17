@@ -71,6 +71,29 @@ try {
   Module._load = originalLoad;
 }
 
+test('counts adjacent text fragments while separating text data parts', async () => {
+  const provider = new OllamaLanguageModelProvider();
+  try {
+    const model = { id: 'test-model' };
+    const token = cancellationTokenSource().token;
+    const message = {
+      role: vscode.LanguageModelChatMessageRole.Assistant,
+      content: [new LanguageModelTextPart('abcd'), new LanguageModelTextPart('efgh')]
+    };
+    assert.equal(await provider.provideTokenCount(model, message, token), 2);
+    const mixed = {
+      ...message,
+      content: [
+        new LanguageModelTextPart('abcd'),
+        new LanguageModelDataPart(new TextEncoder().encode('efgh'), 'text/plain')
+      ]
+    };
+    assert.equal(await provider.provideTokenCount(model, mixed, token), 3);
+  } finally {
+    provider.dispose();
+  }
+});
+
 for (const { name, options = {}, extraParts = [] } of [
   {
     name: 'tool definitions',
