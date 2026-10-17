@@ -17,7 +17,7 @@ export class OutdatedModelWarningTracker {
   private readonly conversations = new Map<number, OutdatedModelWarningConversation>();
   private nextConversationID = 1;
 
-  constructor(private readonly maxChats = 100) {}
+  constructor(private readonly maxChats = 100, private readonly maxHistoryLength = 200) {}
 
   beginRequest(
     history: readonly string[],
@@ -49,7 +49,9 @@ export class OutdatedModelWarningTracker {
       this.conversations.delete(conversation.id);
     }
 
-    conversation.history = [...history];
+    conversation.history = history.length > this.maxHistoryLength
+      ? history.slice(history.length - this.maxHistoryLength)
+      : [...history];
     conversation.lastRequestSucceeded = false;
     this.conversations.set(conversation.id, conversation);
     return { conversationID: conversation.id };
