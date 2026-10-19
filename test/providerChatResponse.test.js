@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const Module = require('node:module');
 const test = require('node:test');
+const { Ollama } = require('ollama');
 
 class LanguageModelTextPart {
   constructor(value) {
@@ -39,7 +40,15 @@ class EventEmitter {
   dispose() {}
 }
 
+class CancellationError extends Error {
+  constructor(message = 'Canceled') {
+    super(message);
+    this.name = 'CancellationError';
+  }
+}
+
 const vscode = {
+  CancellationError,
   LanguageModelChatMessageRole: { User: 1, Assistant: 2, System: 3 },
   LanguageModelTextPart,
   LanguageModelDataPart,
@@ -207,7 +216,8 @@ test('cancelling while the server is thinking closes the request and a later cha
       response.end(JSON.stringify({ message: { content: 'Hello' }, done: true }) + '\n');
     }
   }, async url => {
-    const provider = new OllamaLanguageModelProvider();
+    const logs = [];
+    const provider = new OllamaLanguageModelProvider({ appendLine: line => logs.push(line) });
     const model = { id: 'test-model', name: 'test-model', model: 'test-model', url, headers: {}, local: false };
     const source = cancellationTokenSource();
     const reports = [];
@@ -215,12 +225,15 @@ test('cancelling while the server is thinking closes the request and a later cha
       const cancelled = provider.provideLanguageModelChatResponse(model, [], {}, {
         report(part) { reports.push(part); }
       }, source.token);
-      const rejected = assert.rejects(cancelled, /abort|cancel/i);
+      const rejected = assert.rejects(cancelled, CancellationError);
       await thinkingStarted;
       source.cancel();
       await rejected;
       await connectionClosed;
       assert.deepEqual(reports, []);
+      assert.equal(source.listenerCount, 0);
+      assert(logs.includes('Chat request to test-model was cancelled.'));
+      assert(!logs.some(line => line.includes('request failed')));
       const progress = collectProgress();
       await provider.provideLanguageModelChatResponse(model, [], {}, progress, cancellationTokenSource().token);
       assert.equal(progress.reports[0].value, 'Hello');
@@ -581,11 +594,12 @@ test('cancels a context retry without caching it and allows the next request', {
     const model = { ...contextModel, url };
     const source = cancellationTokenSource();
     try {
-      const rejected = assert.rejects(provider.provideLanguageModelChatResponse(model, [], {}, collectProgress(), source.token), /abort|cancel/i);
+      const rejected = assert.rejects(provider.provideLanguageModelChatResponse(model, [], {}, collectProgress(), source.token), CancellationError);
       await retryStarted;
       source.cancel();
       await rejected;
       await retryClosed;
+      assert.equal(source.listenerCount, 0);
       await provider.provideLanguageModelChatResponse(model, [], {}, collectProgress(), cancellationTokenSource().token);
       assert.deepEqual(requests.map(request => request.options?.num_ctx), [undefined, 16384, undefined]);
     } finally {
@@ -885,6 +899,218 @@ test('distinguishes matching display names and prefers an exact configured ident
   });
 });
 
+test('cancels before response headers and closes the pending HTTP request', { timeout: 5000 }, async () => {
+  let closed;
+  const connectionClosed = new Promise(resolve => { closed = resolve; });
+  let chatStarted;
+  const chatReceived = new Promise(resolve => { chatStarted = resolve; });
+  await withServer((request, response) => {
+    request.resume();
+    response.on('close', closed);
+    chatStarted();
+  }, async url => {
+    const provider = new OllamaLanguageModelProvider();
+    const model = { id: 'test-model', name: 'test-model', model: 'test-model', url, headers: {}, local: false };
+    const source = cancellationTokenSource();
+    try {
+      const responsePromise = provider.provideLanguageModelChatResponse(
+        model,
+        [],
+        {},
+        collectProgress(),
+        source.token
+      );
+      await chatReceived;
+      source.cancel();
+      await assert.rejects(responsePromise, CancellationError);
+      await connectionClosed;
+      assert.equal(source.listenerCount, 0);
+    } finally {
+      source.dispose();
+      provider.dispose();
+    }
+  });
+});
+
+test('aborts a stream that resolves after cancellation and disposes its listener', async t => {
+  let resolveStream;
+  let chatStarted;
+  const started = new Promise(resolve => { chatStarted = resolve; });
+  t.mock.method(Ollama.prototype, 'chat', () => {
+    chatStarted();
+    return new Promise(resolve => { resolveStream = resolve; });
+  });
+  const controller = new AbortController();
+  const stream = {
+    abort() { controller.abort(); },
+    async *[Symbol.asyncIterator]() {
+      controller.signal.throwIfAborted();
+      yield { message: { content: 'must not escape' }, done: true };
+    }
+  };
+  const provider = new OllamaLanguageModelProvider();
+  const source = cancellationTokenSource();
+  const progress = collectProgress();
+  try {
+    const response = provider.provideLanguageModelChatResponse(
+      { id: 'test-model', name: 'test-model', model: 'test-model', url: 'http://127.0.0.1:1', headers: {}, local: false },
+      [], {}, progress, source.token
+    );
+    await started;
+    source.cancel();
+    resolveStream(stream);
+    await assert.rejects(response, CancellationError);
+    assert.equal(controller.signal.aborted, true);
+    assert.deepEqual(progress.reports, []);
+    assert.equal(source.listenerCount, 0);
+  } finally {
+    source.dispose();
+    provider.dispose();
+  }
+});
+
+for (const location of ['in later chunks', 'in the same chunk', 'at completion']) {
+  test(`cancellation drops buffered output ${location}`, { timeout: 5000 }, async () => {
+    let requests = 0;
+    await withServer((request, response) => {
+      request.resume();
+      requests++;
+      const tool_calls = [{ id: 'call-1', function: { name: 'lookup', arguments: {} } }];
+      // One write deliberately makes multiple SDK messages available before abort.
+      response.end((location === 'at completion' ? [
+        { message: { content: 'first' }, done: true, prompt_eval_count: 10, eval_count: 2 }
+      ] : [
+        { message: { content: 'first', ...(location === 'in the same chunk' ? { tool_calls } : {}) } },
+        { message: { content: 'must not escape', tool_calls } },
+        { done: true, prompt_eval_count: 10, eval_count: 2 }
+      ]).map(chunk => JSON.stringify(chunk) + '\n').join(''));
+    }, async url => {
+      const provider = new OllamaLanguageModelProvider();
+      const source = cancellationTokenSource();
+      const reports = [];
+      try {
+        let error;
+        try {
+          await provider.provideLanguageModelChatResponse(
+            { id: 'test-model', name: 'test-model', model: 'test-model', url, headers: {}, local: false }, [], {}, {
+              report(part) { reports.push(part); source.cancel(); }
+            }, source.token
+          );
+        } catch (caught) { error = caught; }
+        assert.deepEqual(reports, [new LanguageModelTextPart('first')]);
+        assert(error instanceof CancellationError, String(error));
+        assert.equal(requests, 1);
+        assert.equal(source.listenerCount, 0);
+      } finally {
+        source.dispose();
+        provider.dispose();
+      }
+    });
+  });
+}
+
+test('cancellation before a context retry prevents another HTTP request', { timeout: 5000 }, async () => {
+  await withContextServer(response => {
+    response.writeHead(400);
+    response.end(JSON.stringify({ error: 'request (12000 tokens) exceeds the available context size (4096 tokens)' }));
+  }, async (url, requests) => {
+    const source = cancellationTokenSource();
+    const provider = new OllamaLanguageModelProvider({
+      appendLine(line) { if (line.includes('Retrying')) source.cancel(); }
+    });
+    try {
+      await assert.rejects(provider.provideLanguageModelChatResponse(
+        { ...contextModel, url }, [], {}, collectProgress(), source.token
+      ), CancellationError);
+      assert.equal(requests.length, 1);
+      assert.equal(source.listenerCount, 0);
+    } finally {
+      source.dispose();
+      provider.dispose();
+    }
+  });
+});
+
+for (const doneReason of [false, true]) {
+  test(`aborts a failed stream ${doneReason ? 'after a done_reason marker' : 'before completion'}`, { timeout: 5000 }, async t => {
+    const aborts = trackStreamAborts(t);
+    let closed;
+    const connectionClosed = new Promise(resolve => { closed = resolve; });
+    await withServer((request, response) => {
+      request.resume();
+      response.on('close', closed);
+      response.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      response.write(JSON.stringify({ message: { content: 'partial' }, ...(doneReason ? { done_reason: 'stop' } : {}) }) + '\n');
+      response.write(JSON.stringify({ error: 'stream failed' }) + '\n');
+      // Leave HTTP open: the provider must actively release the connection.
+    }, async url => {
+      const provider = new OllamaLanguageModelProvider();
+      const source = cancellationTokenSource();
+      const progress = collectProgress();
+      try {
+        await assert.rejects(provider.provideLanguageModelChatResponse(
+          { id: 'test-model', name: 'test-model', model: 'test-model', url, headers: {}, local: false }, [], {}, progress, source.token
+        ), { message: 'stream failed' });
+        await connectionClosed;
+        assert.equal(aborts.length, 1);
+        assert.equal(aborts[0].mock.callCount(), 1);
+        assert.deepEqual(progress.reports, [new LanguageModelTextPart('partial')]);
+        assert.equal(source.listenerCount, 0);
+      } finally {
+        source.dispose();
+        provider.dispose();
+      }
+    });
+  });
+}
+
+test('aborts active stream in finally when an error occurs during streaming', { timeout: 5000 }, async t => {
+  const aborts = trackStreamAborts(t);
+  let closed;
+  const connectionClosed = new Promise(resolve => { closed = resolve; });
+  await withServer((request, response) => {
+    request.resume();
+    response.writeHead(200, { 'content-type': 'application/x-ndjson' });
+    response.on('close', closed);
+    response.write(JSON.stringify({ message: { content: 'first' } }) + '\n');
+  }, async url => {
+    const provider = new OllamaLanguageModelProvider();
+    const model = { id: 'test-model', name: 'test-model', model: 'test-model', url, headers: {}, local: false };
+    try {
+      await assert.rejects(
+        provider.provideLanguageModelChatResponse(
+          model,
+          [],
+          {},
+          {
+            report() {
+              throw new Error('consumer error');
+            }
+          },
+          cancellationTokenSource().token
+        ),
+        /consumer error/
+      );
+      await connectionClosed;
+      assert.equal(aborts.length, 1);
+      assert.equal(aborts[0].mock.callCount(), 1);
+    } finally {
+      provider.dispose();
+    }
+  });
+});
+
+function trackStreamAborts(t) {
+  const aborts = [];
+  const chat = Ollama.prototype.chat;
+  t.mock.method(Ollama.prototype, 'chat', async function(request) {
+    const stream = await chat.call(this, request);
+    aborts.push(t.mock.method(stream, 'abort'));
+    return stream;
+  });
+  return aborts;
+}
+
 async function discoverModels(url, models = [], configuration = {}) {
   const provider = new OllamaLanguageModelProvider();
   try {
@@ -981,6 +1207,7 @@ function cancellationTokenSource() {
   let cancelled = false;
 
   return {
+    get listenerCount() { return listeners.size; },
     token: {
       get isCancellationRequested() {
         return cancelled;

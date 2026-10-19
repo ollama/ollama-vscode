@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { createHash, randomUUID } from 'crypto';
 import {
+  type AbortableAsyncIterator,
   Ollama,
   ChatRequest,
   ChatResponse,
@@ -300,6 +301,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     let requestSucceeded = false;
     let machineContextSource: vscode.CancellationTokenSource | undefined;
     let streamCompleted = false;
+    let stream: AbortableAsyncIterator<ChatResponse> | undefined;
 
     try {
       let promptTokenCount: number | undefined;
@@ -397,9 +399,12 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
         );
       }
 
-      const stream = await streamRequest;
-      const streamDisposable = token.onCancellationRequested(() => stream.abort());
+      stream = await streamRequest;
+      const streamDisposable = token.onCancellationRequested(() => stream?.abort());
       disposables.push(streamDisposable);
+      if (token.isCancellationRequested) {
+        throw new vscode.CancellationError();
+      }
       if (contextLengthCheck && machineContextSource) {
         const contextSource = machineContextSource;
         // Hold buffered chunks briefly while confirming the loaded model's context.
@@ -413,6 +418,10 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
 
       try {
         for await (const chunk of stream as AsyncIterable<ChatResponse>) {
+          // Aborting the fetch does not discard messages already buffered by the SDK.
+          if (token.isCancellationRequested) {
+            throw new vscode.CancellationError();
+          }
           const response = chunk as OllamaChatResponse;
           if (response.done || response.status === 'success' || response.done_reason) {
             streamCompleted = true;
@@ -430,6 +439,9 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
           }
 
           for (const toolCall of response.message?.tool_calls ?? []) {
+            if (token.isCancellationRequested) {
+              throw new vscode.CancellationError();
+            }
             progress.report(new vscode.LanguageModelToolCallPart(
               toolCall.id ?? randomUUID(),
               toolCall.function.name,
@@ -443,6 +455,9 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
         if (!streamCompleted || !isMissingStreamCompletionError(streamError)) {
           throw streamError;
         }
+      }
+      if (token.isCancellationRequested) {
+        throw new vscode.CancellationError();
       }
       const usagePart = buildUsageDataPart(promptTokenCount, completionTokenCount);
       if (usagePart) {
@@ -460,8 +475,15 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       }
       requestSucceeded = true;
     } catch (error) {
+      if (token.isCancellationRequested && (isAbortedRequestError(error) || error instanceof vscode.CancellationError)) {
+        this.output?.appendLine(`Chat request to ${model.model} was cancelled.`);
+        throw new vscode.CancellationError();
+      }
       throw await this.handleChatError(model, error);
     } finally {
+      if (!requestSucceeded) {
+        stream?.abort();
+      }
       machineContextSource?.cancel();
       this.outdatedModelWarnings.finishRequest(warningRequest, requestSucceeded);
       disposeAll(disposables);
@@ -1073,6 +1095,24 @@ function isAbortError(error: unknown): boolean {
     && error !== null
     && 'name' in error
     && error.name === 'AbortError';
+}
+
+export function isAbortedRequestError(error: unknown): boolean {
+  let current: unknown = error;
+  const visited = new Set<unknown>();
+
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    if (isAbortError(current)) {
+      return true;
+    }
+    if (current instanceof TypeError && current.message === 'terminated') {
+      return true;
+    }
+    current = 'cause' in current ? (current as { cause: unknown }).cause : undefined;
+  }
+
+  return false;
 }
 
 function isCloudModel(model: string): boolean {
