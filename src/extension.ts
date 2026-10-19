@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { Ollama } from 'ollama';
 import { OllamaLanguageModelProvider, createFetch, disposeAll } from './provider';
+import { resolveMaxContextLength } from './modelLimits';
 import {
   inspectOllamaModels,
   ollamaDiagnosticsClientOptions,
@@ -36,6 +37,7 @@ async function diagnoseModels(output: vscode.OutputChannel, provider: OllamaLang
   output.show(true);
   output.appendLine('--- Diagnostics ---');
 
+  provider.resetThinkingDiagnostics();
   const allVSCodeModels = await vscode.lm.selectChatModels();
   output.appendLine(`VS Code returned ${allVSCodeModels.length} total language model(s).`);
   for (const model of allVSCodeModels) {
@@ -44,6 +46,11 @@ async function diagnoseModels(output: vscode.OutputChannel, provider: OllamaLang
 
   const ollamaVSCodeModels = allVSCodeModels.filter(model => model.vendor === ollamaVendor);
   output.appendLine(`VS Code returned ${ollamaVSCodeModels.length} Ollama language model(s).`);
+
+  const settings = vscode.workspace.getConfiguration('ollama');
+  for (const line of provider.getThinkingDiagnosticLines(settings.get<unknown>('thinkingLevels'))) {
+    output.appendLine(line);
+  }
 
   await inspectDirectOllamaModels(output, provider);
 
@@ -58,9 +65,10 @@ async function inspectDirectOllamaModels(
   const workspaceEndpoint = settings.get<string>('endpoint', defaultOllamaURL) || defaultOllamaURL;
   const selected = provider.selectDiagnosticsConfiguration({
     url: workspaceEndpoint,
-    headers: getConfiguredHeaders(settings)
+    headers: getConfiguredHeaders(settings),
+    maxContextLength: resolveMaxContextLength(undefined, settings.get('maxContextLength'))
   });
-  const { url: endpoint, headers } = selected.configuration;
+  const { url: endpoint, headers, maxContextLength } = selected.configuration;
   output.appendLine(
     `Direct Ollama API is inspecting ${configurationSourceLabel(selected.source)} at ${endpoint}.`
   );
@@ -73,7 +81,7 @@ async function inspectDirectOllamaModels(
   ));
   const timer = setTimeout(() => source.cancel(), 5000);
   try {
-    const inspection = await inspectOllamaModels(ollama);
+    const inspection = await inspectOllamaModels(ollama, maxContextLength);
 
     if (inspection.availableModels !== undefined) {
       const availableModelNames = inspection.availableModels;

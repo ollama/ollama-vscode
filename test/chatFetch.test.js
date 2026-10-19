@@ -182,6 +182,65 @@ test('enforces a finite response header timeout', async () => {
   });
 });
 
+test('keeps a stream open after more than five minutes without data', { timeout: 5000 }, async () => {
+  const timers = require('undici/lib/util/timers');
+  let serverResponse;
+  await withServer((request, response) => {
+    request.resume();
+    serverResponse = response;
+    response.writeHead(200, { 'Content-Type': 'text/plain' });
+    response.write('part1');
+  }, async url => {
+    const transport = createChatFetch(1000);
+    try {
+      const response = await transport.fetch(`${url}/api/chat`);
+      assert.equal(response.status, 200);
+      const reader = response.body.getReader();
+      const first = await withTimeout(reader.read(), 1000);
+      assert.equal(new TextDecoder().decode(first.value), 'part1');
+
+      // Advance Undici's test clock beyond its old 300,000 ms idle timeout.
+      // Keep a read pending so backpressure cannot suspend that timeout.
+      const nextChunk = reader.read().then(result => ({ result }), error => ({ error }));
+      timers.tick(1000);
+      timers.tick(301000);
+      await new Promise(resolve => setImmediate(resolve));
+      serverResponse.end('part2');
+
+      const next = await withTimeout(nextChunk, 1000);
+      assert.ifError(next.error);
+      assert.equal(next.result.done, false);
+      assert.equal(new TextDecoder().decode(next.result.value), 'part2');
+      assert.equal((await withTimeout(reader.read(), 1000)).done, true);
+    } finally {
+      transport.dispose();
+      timers.reset();
+    }
+  });
+});
+
+test('enforces an explicit body timeout when configured', async () => {
+  await withServer((request, response) => {
+    request.resume();
+    response.writeHead(200, { 'Content-Type': 'text/plain' });
+    response.flushHeaders();
+    setTimeout(() => {
+      response.end('too late');
+    }, 1500);
+  }, async url => {
+    const transport = createChatFetch(2000, undefined, 100);
+    try {
+      const response = await transport.fetch(`${url}/api/chat`);
+      await assert.rejects(
+        response.text(),
+        error => error.cause?.code === 'UND_ERR_BODY_TIMEOUT' || error.code === 'UND_ERR_BODY_TIMEOUT'
+      );
+    } finally {
+      transport.dispose();
+    }
+  });
+});
+
 test('links VS Code cancellation to the chat request', async () => {
   let requestClosed;
   let markRequestStarted;

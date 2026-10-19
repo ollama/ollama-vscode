@@ -2,9 +2,11 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   formatContextLength,
+  formatContextExceededError,
   isMachineContextTooSmall,
   machineContextLength,
   minimumMachineContextLength,
+  parseContextExceededError,
   waitForMachineContextCheckBeforeStreaming,
   waitForMachineContextLength
 } = require('../out/contextLength');
@@ -195,4 +197,49 @@ test('does not time out a machine context check that finishes first', async () =
   await Promise.resolve();
 
   assert.equal(cancelled, false);
+});
+
+test('parseContextExceededError extracts requested and available tokens from error message', () => {
+  const errorMsg = 'request (32644 tokens) exceeds the available context size (4096 tokens), try increasing it';
+  assert.deepEqual(parseContextExceededError(errorMsg), {
+    requestedTokens: 32644,
+    availableTokens: 4096
+  });
+
+  // Works with Error objects
+  assert.deepEqual(parseContextExceededError(new Error(errorMsg)), {
+    requestedTokens: 32644,
+    availableTokens: 4096
+  });
+
+  // Works with object containing message
+  assert.deepEqual(parseContextExceededError({ message: errorMsg }), {
+    requestedTokens: 32644,
+    availableTokens: 4096
+  });
+
+  // Returns undefined for non-matching errors
+  assert.equal(parseContextExceededError('connection refused'), undefined);
+  assert.equal(parseContextExceededError(new Error('model not found')), undefined);
+  assert.equal(parseContextExceededError(undefined), undefined);
+});
+
+test('does not parse invalid or non-exceeding context counts', () => {
+  for (const [requested, available] of [[0, 4096], [12000, 0], [4096, 4096], [4000, 4096], [1e20, 4096]]) {
+    assert.equal(parseContextExceededError(
+      `request (${requested} tokens) exceeds the available context size (${available} tokens)`
+    ), undefined);
+  }
+});
+
+test('distinguishes an allocation error from the model maximum', () => {
+  const exceeded = { requestedTokens: 32644, availableTokens: 4096 };
+  assert.equal(
+    formatContextExceededError(exceeded, 32768, 'qwen2.5-coder:32b'),
+    'Prompt (32,644 tokens) exceeds the allocated context window (4K) for qwen2.5-coder:32b. Increase the context window or shorten the prompt to continue.'
+  );
+  assert.equal(
+    formatContextExceededError({ ...exceeded, requestedTokens: 35000 }, 32768, 'qwen2.5-coder:32b'),
+    "Prompt (35,000 tokens) exceeds qwen2.5-coder:32b's maximum context window (32K). Shorten the prompt or remove attachments to continue."
+  );
 });

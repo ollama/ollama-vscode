@@ -3,7 +3,7 @@
   "displayName": "Ollama",
   "description": "Ollama language model provider for VS Code.",
   "publisher": "Ollama",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "icon": "images/icon.png",
   "license": "MIT",
   "repository": {
@@ -64,7 +64,7 @@
               "type": "integer",
               "minimum": 1,
               "title": "Maximum Context Length",
-              "description": "Maximum context window advertised to VS Code for models running on this Ollama server. Match the server's allocated context length. Cloud models are unaffected."
+              "description": "Maximum context window advertised to VS Code and requested from this Ollama server, including recovery retries. Cloud models are unaffected."
             }
           }
         }
@@ -90,7 +90,7 @@
           "ollama.maxContextLength": {
             "type": "integer",
             "minimum": 1,
-            "description": "Maximum context window advertised to VS Code for models running on your Ollama server. Match the server's allocated context length. Cloud models are unaffected. Provider configuration takes precedence when present."
+            "description": "Maximum context window advertised to VS Code and requested from your Ollama server, including recovery retries. Cloud models are unaffected. Provider configuration takes precedence when present."
           },
           "ollama.thinkingLevels": {
             "type": "object",

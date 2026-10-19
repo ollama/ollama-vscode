@@ -268,3 +268,107 @@ test('matches older-server fallback policies using the request identifier instea
     provider.dispose();
   }
 });
+
+test('provides thinking diagnostics through provider agreeing with request configuration', async () => {
+  models = [
+    {
+      name: 'Qwen Display',
+      model: 'server/qwen3.8:27b',
+      capabilities: ['thinking'],
+      remote_host: 'ollama.com',
+      show: { thinking: { values: [false, 'low', 'medium'], default: 'medium' } }
+    },
+    {
+      name: 'gpt-oss:20b',
+      capabilities: ['thinking'],
+      remote_host: 'ollama.com'
+    }
+  ];
+  settings.thinkingLevels = { 'server/qwen3.8:27b': 'low' };
+  const provider = new OllamaLanguageModelProvider();
+  try {
+    const discovered = await provider.provideLanguageModelChatInformation({}, cancellationToken);
+    const lines = provider.getThinkingDiagnosticLines(settings.thinkingLevels);
+    assert.deepEqual(lines, [
+      'Thinking settings for http://127.0.0.1:11434/:',
+      '- server/qwen3.8:27b: supported values: [false, "low", "medium"]; server-advertised default: "medium"; configured override: "low"; effective setting for next request: "low"',
+      '- gpt-oss:20b: supported values: ["low", "medium", "high"]; compatibility fallback default: "medium"; configured override: none; think will be omitted to use server default'
+    ]);
+    for (const model of discovered) {
+      await provider.provideLanguageModelChatResponse(model, [], {}, { report() {} }, cancellationToken);
+    }
+    assert.deepEqual(chatRequests.map(request => request.think), ['low', undefined]);
+  } finally {
+    provider.dispose();
+  }
+});
+
+test('keeps provider groups separate and drops removed groups from a new diagnostic snapshot', async () => {
+  const first = { configuration: { url: 'http://127.0.0.1:9/first' } };
+  const second = { configuration: {
+    url: 'http://diagnostic-user:diagnostic-password@127.0.0.1:9/second?token=diagnostic-token',
+    headers: { Authorization: 'Bearer diagnostic-header' }
+  } };
+  const entry = {
+    name: 'Shared model', model: 'shared:latest', capabilities: ['thinking'], remote_host: 'ollama.com'
+  };
+  settings.thinkingLevels = { 'shared:latest': false };
+  const provider = new OllamaLanguageModelProvider();
+  try {
+    models = [{ ...entry, show: { thinking: { values: [false, true], default: true } } }];
+    const [booleanModel] = await provider.provideLanguageModelChatInformation(first, cancellationToken);
+    models = [{ ...entry, show: { thinking: { values: ['low', 'high'], default: 'low' } } }];
+    const [namedModel] = await provider.provideLanguageModelChatInformation(second, cancellationToken);
+    const lines = provider.getThinkingDiagnosticLines(settings.thinkingLevels);
+    assert.deepEqual(lines, [
+      'Thinking settings for http://127.0.0.1:9/first:',
+      '- shared:latest: supported values: [false, true]; server-advertised default: true; configured override: false; effective setting for next request: false',
+      'Thinking settings for http://127.0.0.1:9/second:',
+      '- shared:latest: supported values: ["low", "high"]; server-advertised default: "low"; configured override: false (unsupported, ignored); think will be omitted to use server default'
+    ]);
+    assert.doesNotMatch(lines.join('\n'), /diagnostic-(user|password|token|header)/);
+    for (const model of [booleanModel, namedModel, booleanModel]) {
+      await provider.provideLanguageModelChatResponse(model, [], {}, { report() {} }, cancellationToken);
+    }
+    assert.deepEqual(chatRequests.map(request => request.think), [false, undefined, false]);
+
+    provider.resetThinkingDiagnostics();
+    assert.deepEqual(provider.getThinkingDiagnosticLines(settings.thinkingLevels), []);
+    models = [{ ...entry, show: { thinking: { values: [false, true], default: true } } }];
+    await provider.provideLanguageModelChatInformation(first, cancellationToken);
+    assert.deepEqual(provider.getThinkingDiagnosticLines(settings.thinkingLevels), lines.slice(0, 2));
+  } finally {
+    provider.dispose();
+  }
+});
+
+test('keeps models with missing or non-configurable metadata visible while omitting think', async () => {
+  models = [
+    { name: 'unknown-thinking:cloud', capabilities: ['thinking'], remote_host: 'ollama.com' },
+    { name: 'always-thinking:cloud', capabilities: ['thinking'], remote_host: 'ollama.com',
+      show: { thinking: { values: [true], default: true } } },
+    { name: 'invalid-thinking:cloud', capabilities: ['thinking'], remote_host: 'ollama.com',
+      show: { thinking: { values: ['low', 'high'] } } }
+  ];
+  const provider = new OllamaLanguageModelProvider();
+  try {
+    const discovered = await provider.provideLanguageModelChatInformation({}, cancellationToken);
+    for (const configuredValue of [undefined, true]) {
+      settings.thinkingLevels = configuredValue === undefined ? {}
+        : Object.fromEntries(models.map(model => [model.name, configuredValue]));
+      const lines = provider.getThinkingDiagnosticLines(settings.thinkingLevels);
+      for (const model of discovered) {
+        const line = lines.find(line => line.startsWith(`- ${model.model}:`));
+        assert.ok(line, `${model.model} must remain visible without an override`);
+        assert.match(line, /configurable thinking values unavailable/);
+        assert.match(line, /think will be omitted to use server default/);
+        assert.doesNotMatch(line, /does not support thinking/);
+        assert.match(line, configuredValue === undefined ? /configured override: none/ : /configured override: true \(ignored\)/);
+        await provider.provideLanguageModelChatResponse(model, [], {}, { report() {} }, cancellationToken);
+        assert.equal(chatRequests.at(-1).think, undefined);
+      }
+    }
+  } finally {
+    provider.dispose();
+  }
+});

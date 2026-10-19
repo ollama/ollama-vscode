@@ -22,10 +22,12 @@ export function trustedCACertificates(
 
 export function createChatFetch(
   headersTimeout: number,
-  loadCertificates: typeof getCACertificates = getCACertificates
+  loadCertificates: typeof getCACertificates = getCACertificates,
+  bodyTimeout = 0
 ): ChatFetch {
   const dispatcher = new Agent({
     headersTimeout,
+    bodyTimeout,
     connect: { ca: trustedCACertificates(loadCertificates) }
   });
   let disposed = false;

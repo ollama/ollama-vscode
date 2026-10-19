@@ -25,15 +25,19 @@ import { createChatFetch } from './chatFetch';
 import { calculateModelTokenLimits, resolveMaxContextLength } from './modelLimits';
 import {
   formatContextLength,
+  formatContextExceededError,
   isMachineContextTooSmall,
   minimumMachineContextLength,
+  parseContextExceededError,
   waitForMachineContextCheckBeforeStreaming,
   waitForMachineContextLength
 } from './contextLength';
 import {
   OllamaDiagnosticsConfigurationTracker,
   type OllamaDiagnosticsConfiguration,
-  type OllamaDiagnosticsConfigurationSelection
+  type OllamaDiagnosticsConfigurationSelection,
+  thinkingDiagnosticLines,
+  type ThinkingDiagnosticModel
 } from './diagnostics';
 import {
   supportedThinkingLevel,
@@ -54,7 +58,9 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
   url: string;
   headers: Record<string, string>;
   local: boolean;
+  maxContextLength?: number;
   thinkingPolicy?: ThinkingPolicy;
+  defaultSource?: 'server' | 'compatibility';
   recommendedReplacement?: string;
 }
 
@@ -151,16 +157,25 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   private readonly outdatedModelWarnings = new OutdatedModelWarningTracker();
   private readonly machineContextWarnings = new Set<string>();
   private readonly diagnosticsConfigurations = new OllamaDiagnosticsConfigurationTracker();
+  private recoveredContextLengths = new Map<string, number>();
+  private readonly thinkingDiagnosticGroups = new Map<string, {
+    url: string;
+    models: ThinkingDiagnosticModel[];
+  }>();
   readonly onDidChangeLanguageModelChatInformation = this.changeEmitter.event;
 
   constructor(private readonly output?: vscode.OutputChannel) {}
 
   refresh() {
+    this.recoveredContextLengths = new Map();
+    this.resetThinkingDiagnostics();
     this.output?.appendLine('Refreshing Ollama language models.');
     this.changeEmitter.fire();
   }
 
   dispose() {
+    this.recoveredContextLengths = new Map();
+    this.resetThinkingDiagnostics();
     this.changeEmitter.dispose();
   }
 
@@ -170,11 +185,26 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     return this.diagnosticsConfigurations.select(workspaceConfiguration);
   }
 
+  resetThinkingDiagnostics() {
+    this.thinkingDiagnosticGroups.clear();
+  }
+
+  getThinkingDiagnosticLines(configuredLevels?: unknown): string[] {
+    return [...this.thinkingDiagnosticGroups.values()].flatMap(group => {
+      const lines = thinkingDiagnosticLines(group.models, configuredLevels);
+      return lines.length > 0
+        ? [`Thinking settings for ${diagnosticEndpoint(group.url)}:`, ...lines.slice(1)]
+        : [];
+    });
+  }
+
   async provideLanguageModelChatInformation(
     options: vscode.PrepareLanguageModelChatModelOptions,
     token: vscode.CancellationToken
   ): Promise<OllamaLanguageModel[]> {
     const configuration = getConfiguration(options);
+    const diagnosticsKey = JSON.stringify(configuration);
+    this.thinkingDiagnosticGroups.delete(diagnosticsKey);
     this.diagnosticsConfigurations.recordResolved(configuration);
     const disposables: vscode.Disposable[] = [];
     const request = createFetch(token, disposables);
@@ -208,13 +238,18 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
           `Providing ${models.length} Ollama model(s) from ${configuration.url}${versionSuffix}${recommendationSuffix}${contextLimitSuffix}.`
         );
 
-        return hydratedModels.map(({ model, show }) => this.toLanguageModel(
+        const languageModels = hydratedModels.map(({ model, show }) => this.toLanguageModel(
           model,
           show,
           configuration,
           recommendedReplacement(model.name, availableModels, recommendations),
           isRecommendedModel(model.name, recommendations)
         ));
+        this.thinkingDiagnosticGroups.set(diagnosticsKey, {
+          url: configuration.url,
+          models: languageModels
+        });
+        return languageModels;
       } catch (error) {
         throw this.userFacingError(error);
       }
@@ -276,15 +311,66 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
         : undefined;
       const thinkingLevel = supportedThinkingLevel(model.thinkingPolicy, rawThinkingLevel);
 
+      const totalContextWindow = (model.maxInputTokens ?? fallbackContextWindow)
+        + (model.maxOutputTokens ?? defaultMaxOutputTokens);
+      const configuredModelOptions = options.modelOptions ? { ...options.modelOptions } : undefined;
+      const canRecoverContext = model.local && configuredModelOptions?.num_ctx === undefined;
+      // Keep successful allocations stable across turns, isolated by server and credentials.
+      // Refresh replaces the map so an in-flight request cannot repopulate the new cache.
+      const recoveredContextLengths = this.recoveredContextLengths;
+      const contextKey = createHash('sha256')
+        .update(JSON.stringify([model.url, model.model, model.headers, totalContextWindow]))
+        .digest('hex');
+      const recoveredNumCtx = canRecoverContext ? recoveredContextLengths.get(contextKey) : undefined;
+      let requestOptions = recoveredNumCtx !== undefined
+        ? { ...configuredModelOptions, num_ctx: recoveredNumCtx }
+        : configuredModelOptions;
+      if (model.local && model.maxContextLength !== undefined) {
+        const numCtx = requestOptions?.num_ctx;
+        // A server default or explicit automatic value may exceed the manual cap.
+        // Bound the first request as well as recovery, retaining smaller explicit values.
+        requestOptions = {
+          ...requestOptions,
+          num_ctx: typeof numCtx === 'number' && Number.isSafeInteger(numCtx) && numCtx > 0
+            ? Math.min(numCtx, totalContextWindow)
+            : totalContextWindow
+        };
+      }
+
       let chatRequestSettled = false;
-      const streamRequest = ollama.chat({
+      let retryNumCtx: number | undefined;
+      const request = {
         model: model.model,
         messages: ollamaMessages,
         stream: true,
         tools: tools.length > 0 ? tools : undefined,
         think: thinkingLevel,
-        options: options.modelOptions ? { ...options.modelOptions } : undefined
-      } as ChatRequest & { stream: true });
+        options: requestOptions
+      } as ChatRequest & { stream: true };
+      const streamRequest = (async () => {
+        try {
+          return await ollama.chat(request);
+        } catch (error) {
+          const exceeded = parseContextExceededError(error);
+          if (!canRecoverContext || token.isCancellationRequested || !exceeded
+            || exceeded.requestedTokens > totalContextWindow) {
+            throw error;
+          }
+          const target = Math.min(
+            totalContextWindow,
+            Math.ceil((exceeded.requestedTokens + (model.maxOutputTokens ?? defaultMaxOutputTokens)) / 1024) * 1024
+          );
+          if (target <= Math.max(requestOptions?.num_ctx ?? 0, exceeded.availableTokens)) {
+            throw error;
+          }
+          retryNumCtx = target;
+          this.output?.appendLine(
+            `Prompt (${exceeded.requestedTokens} tokens) exceeded Ollama context (${exceeded.availableTokens}). Retrying ${model.model} with num_ctx=${retryNumCtx}...`
+          );
+          // Retry only before receiving a stream, never replay partially emitted tool calls.
+          return ollama.chat({ ...request, options: { ...requestOptions, num_ctx: retryNumCtx } });
+        }
+      })();
       void streamRequest.then(
         () => { chatRequestSettled = true; },
         () => { chatRequestSettled = true; }
@@ -306,6 +392,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
           contextOllama,
           model,
           () => chatRequestSettled,
+          () => model.maxContextLength === undefined ? undefined : retryNumCtx ?? requestOptions?.num_ctx,
           machineContextSource.token
         );
       }
@@ -365,6 +452,12 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       if (promptTokenCount !== undefined && tools.length === 0) {
         this.tokenCounts.record(model.id, messages, promptTokenCount);
       }
+      if (retryNumCtx !== undefined && !token.isCancellationRequested) {
+        recoveredContextLengths.set(contextKey, Math.max(retryNumCtx, recoveredContextLengths.get(contextKey) ?? 0));
+        if (recoveredContextLengths.size > 100) {
+          recoveredContextLengths.delete(recoveredContextLengths.keys().next().value!);
+        }
+      }
       requestSucceeded = true;
     } catch (error) {
       throw await this.handleChatError(model, error);
@@ -404,6 +497,14 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       return new Error(message);
     }
 
+    const exceeded = parseContextExceededError(error);
+    if (exceeded) {
+      const totalContextWindow = (model.maxInputTokens ?? fallbackContextWindow)
+        + (model.maxOutputTokens ?? defaultMaxOutputTokens);
+      const message = formatContextExceededError(exceeded, totalContextWindow, model.name);
+      return new Error(message);
+    }
+
     return this.userFacingError(error);
   }
 
@@ -411,6 +512,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     ollama: Ollama,
     model: OllamaLanguageModel,
     isChatRequestSettled: () => boolean,
+    requestedContextLength: () => number | undefined,
     token: vscode.CancellationToken
   ): Promise<void> {
     if (!model.local) {
@@ -442,8 +544,12 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       return;
     }
 
+    const minimumContextLength = Math.min(
+      minimumMachineContextLength,
+      requestedContextLength() ?? minimumMachineContextLength
+    );
     const warningKey = model.url;
-    if (!isMachineContextTooSmall(contextLength)) {
+    if (!isMachineContextTooSmall(contextLength, minimumContextLength)) {
       this.machineContextWarnings.delete(warningKey);
       return;
     }
@@ -453,7 +559,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     this.machineContextWarnings.add(warningKey);
 
     const allocated = formatContextLength(contextLength);
-    const minimum = formatContextLength(minimumMachineContextLength);
+    const minimum = formatContextLength(minimumContextLength);
     this.output?.appendLine(
       `Ollama allocated a ${allocated} context window for ${model.model}; at least ${minimum} is recommended.`
     );
@@ -479,7 +585,13 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     if (isAuthError(error)) {
       return new Error('Run ollama signin and try again.');
     }
-    return error instanceof Error ? error : new Error(String(error));
+    if (error instanceof Error) {
+      if (error.cause && typeof error.cause === 'object' && 'message' in error.cause && typeof error.cause.message === 'string') {
+        return new Error(`${error.message}: ${error.cause.message}`);
+      }
+      return error;
+    }
+    return new Error(String(error));
   }
 
   private async confirmOutdatedModelUse(
@@ -543,8 +655,14 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     const name = model.name;
     const id = modelIdentifier(model);
     const family = modelFamily(model, show);
+    const hasServerThinkingMetadata = show?.thinking !== undefined
+      && typeof show.thinking === 'object'
+      && show.thinking !== null;
     const policy = hasCapability(capabilities, 'thinking', 'reasoning')
       ? thinkingPolicy(id, family, show?.thinking)
+      : undefined;
+    const defaultSource = policy
+      ? (hasServerThinkingMetadata ? 'server' : 'compatibility')
       : undefined;
     const local = !isRemoteModel(model) && !isCloudModel(id);
     const { maxInputTokens, maxOutputTokens } = modelTokenLimits(
@@ -569,7 +687,9 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       url: configuration.url,
       headers: configuration.headers,
       local,
+      maxContextLength: configuration.maxContextLength,
       thinkingPolicy: policy,
+      defaultSource,
       recommendedReplacement: replacement
     };
   }
@@ -785,6 +905,16 @@ function isRemoteModel(model: OllamaTagsModel): boolean {
   return typeof model.remote_host === 'string' && model.remote_host.length > 0;
 }
 
+function diagnosticEndpoint(endpoint: string): string {
+  try {
+    const url = new URL(endpoint);
+    // Identify the server without exposing URL credentials or query parameters.
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return 'the configured Ollama server';
+  }
+}
+
 function getConfiguredHeaders(
   configuration: { readonly [key: string]: unknown } | undefined,
   settings: vscode.WorkspaceConfiguration
@@ -951,7 +1081,13 @@ function isCloudModel(model: string): boolean {
 }
 
 function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) {
+    if (error.cause && typeof error.cause === 'object' && 'message' in error.cause && typeof error.cause.message === 'string') {
+      return `${error.message}: ${error.cause.message}`;
+    }
+    return error.message;
+  }
+  return String(error);
 }
 
 function partToText(part: vscode.LanguageModelInputPart | unknown): string {

@@ -40,7 +40,7 @@ The extension discovers models from `http://127.0.0.1:11434` by default.
 ## Context length
 
 For models running on your Ollama server, set **Ollama: Max Context Length** to
-match the context allocated by the server. For example, start Ollama with a
+limit the context the extension can request. For example, start Ollama with a
 65,536-token default:
 
 ```sh
@@ -57,20 +57,22 @@ example above, add this to `settings.json` instead:
 }
 ```
 
-The extension refreshes the model list when the setting changes. The combined
-input and output budget reported to VS Code stays within the configured cap
-and the model's known context capacity. Cloud models are unaffected by this
-setting. The Ollama output channel reports
+The extension refreshes the model list when the setting changes. Both the combined
+input and output budget reported to VS Code and the context requested from Ollama
+stay within the configured cap and the model's known context capacity.
+Cloud models are unaffected by this setting. The Ollama output channel reports
 `local model context cap: 65536 tokens` for the example above.
 
 For separate Ollama provider groups, set `maxContextLength` in
 `chatLanguageModels.json` to override the global setting for that group.
-Without either setting, the extension uses the context reported by model discovery.
+With a cap configured, local requests set `num_ctx` to that bounded window from
+the first request. A smaller explicit `num_ctx` is preserved; larger or automatic
+values cannot bypass the cap. Explicit values still disable automatic recovery,
+and recovery never grows beyond the cap. Oversized requests are not trimmed.
 
-This setting controls the budget advertised to VS Code. It does not change
-Ollama's runtime allocation or trim oversized requests. Use `ollama ps` to
-check the context allocated to a loaded model; model parameters or request
-options can override the server's default.
+Without either setting, the extension keeps Ollama's initial allocation and the
+existing single retry for a reported context error, bounded by model capacity.
+Use `ollama ps` to check the context allocated to a loaded model.
 
 ## Thinking effort
 

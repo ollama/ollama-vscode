@@ -5,7 +5,8 @@ const {
   loadedModelContextDiagnosticLines,
   maximumSupportedContextLength,
   OllamaDiagnosticsConfigurationTracker,
-  ollamaDiagnosticsClientOptions
+  ollamaDiagnosticsClientOptions,
+  thinkingDiagnosticLines
 } = require('../out/diagnostics');
 
 test('uses the most recently resolved provider group when the workspace endpoint differs', () => {
@@ -20,7 +21,8 @@ test('uses the most recently resolved provider group when the workspace endpoint
   });
   tracker.recordResolved({
     url: 'https://provider.example.test',
-    headers: { Authorization: 'Bearer provider' }
+    headers: { Authorization: 'Bearer provider' },
+    maxContextLength: 32768
   });
 
   const selected = tracker.select(workspaceConfiguration);
@@ -28,7 +30,8 @@ test('uses the most recently resolved provider group when the workspace endpoint
   assert.equal(selected.source, 'resolved-provider-group');
   assert.deepEqual(selected.configuration, {
     url: 'https://provider.example.test',
-    headers: { Authorization: 'Bearer provider' }
+    headers: { Authorization: 'Bearer provider' },
+    maxContextLength: 32768
   });
 });
 
@@ -40,7 +43,8 @@ test('prefers the most recently used provider group for diagnostics', () => {
   });
   tracker.recordUsed({
     url: 'https://used.example.test',
-    headers: { 'X-Ollama-Group': 'used' }
+    headers: { 'X-Ollama-Group': 'used' },
+    maxContextLength: 8192
   });
 
   const selected = tracker.select({
@@ -51,7 +55,8 @@ test('prefers the most recently used provider group for diagnostics', () => {
   assert.equal(selected.source, 'used-provider-group');
   assert.deepEqual(selected.configuration, {
     url: 'https://used.example.test',
-    headers: { 'X-Ollama-Group': 'used' }
+    headers: { 'X-Ollama-Group': 'used' },
+    maxContextLength: 8192
   });
 });
 
@@ -97,6 +102,35 @@ test('queries loaded models and reuses tags metadata through the diagnostics cli
   assert.deepEqual(inspection.loadedModelLines, [
     'Ollama reports 1 loaded local model(s):',
     '- gemma3:latest: runtime context allocation: 32K; maximum supported context: 128K; WARNING: runtime allocation is below the recommended 64K'
+  ]);
+});
+
+test('reports a manual context cap without recommending allocations beyond it or native capacity', async () => {
+  const inspection = await inspectOllamaModels({
+    async list() {
+      return { models: [
+        { name: 'capped', context_length: 131072 },
+        { name: 'underallocated', context_length: 131072 },
+        { name: 'small-native', max_context_length: 131072, model_info: { 'llama.context_length': 8192 } }
+      ] };
+    },
+    async ps() {
+      return { models: [
+        { name: 'capped', context_length: 32768 },
+        { name: 'underallocated', context_length: 4096 },
+        { name: 'small-native', context_length: 8192 }
+      ] };
+    },
+    async show() {
+      assert.fail('tag metadata should avoid an additional lookup');
+    }
+  }, 32768);
+
+  assert.deepEqual(inspection.loadedModelLines, [
+    'Ollama reports 3 loaded local model(s):',
+    '- capped: runtime context allocation: 32K; maximum supported context: 128K; configured context cap: 32K',
+    '- underallocated: runtime context allocation: 4K; maximum supported context: 128K; configured context cap: 32K; WARNING: runtime allocation is below the recommended 32K',
+    '- small-native: runtime context allocation: 8K; maximum supported context: 8K; configured context cap: 32K'
   ]);
 });
 
@@ -193,4 +227,90 @@ test('reads maximum context only from model metadata supplied separately from th
   assert.equal(maximumSupportedContextLength({
     model_info: { 'gemma3.context_length': 131072 }
   }), 131072);
+});
+
+test('formats thinking diagnostics with server-advertised default and effective setting for next request', () => {
+  const models = [{
+    model: 'server/qwen3.8:27b',
+    thinkingPolicy: { levels: [false, 'low', 'medium', 'xhigh'], defaultLevel: 'medium' },
+    defaultSource: 'server'
+  }];
+  const lines = thinkingDiagnosticLines(models, { 'server/qwen3.8:27b': 'low' });
+
+  assert.deepEqual(lines, [
+    'Thinking settings:',
+    '- server/qwen3.8:27b: supported values: [false, "low", "medium", "xhigh"]; server-advertised default: "medium"; configured override: "low"; effective setting for next request: "low"'
+  ]);
+});
+
+test('distinguishes compatibility fallback defaults and explains omitted think when override is unset', () => {
+  const models = [{
+    model: 'gpt-oss:20b',
+    thinkingPolicy: { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
+    defaultSource: 'compatibility'
+  }];
+  const lines = thinkingDiagnosticLines(models, {});
+
+  assert.deepEqual(lines, [
+    'Thinking settings:',
+    '- gpt-oss:20b: supported values: ["low", "medium", "high"]; compatibility fallback default: "medium"; configured override: none; think will be omitted to use server default'
+  ]);
+});
+
+test('explains why an unsupported override is ignored and that think will be omitted', () => {
+  const models = [{
+    model: 'deepseek-v4-flash:cloud',
+    thinkingPolicy: { levels: [false, 'high', 'max'], defaultLevel: false },
+    defaultSource: 'compatibility'
+  }];
+  const lines = thinkingDiagnosticLines(models, { 'deepseek-v4-flash:cloud': 'low' });
+
+  assert.deepEqual(lines, [
+    'Thinking settings:',
+    '- deepseek-v4-flash:cloud: supported values: [false, "high", "max"]; compatibility fallback default: false; configured override: "low" (unsupported, ignored); think will be omitted to use server default'
+  ]);
+});
+
+test('supports boolean configured thinking overrides', () => {
+  const models = [{
+    model: 'deepseek-v4-flash:cloud',
+    thinkingPolicy: { levels: [false, 'high', 'max'], defaultLevel: false },
+    defaultSource: 'compatibility'
+  }];
+  const lines = thinkingDiagnosticLines(models, { 'deepseek-v4-flash:cloud': false });
+
+  assert.deepEqual(lines, [
+    'Thinking settings:',
+    '- deepseek-v4-flash:cloud: supported values: [false, "high", "max"]; compatibility fallback default: false; configured override: false; effective setting for next request: false'
+  ]);
+});
+
+test('explains unavailable overrides without inferring that a model cannot think', () => {
+  const nonThinking = [{ model: 'llama3:8b' }];
+  assert.deepEqual(thinkingDiagnosticLines([], {}), []);
+  assert.deepEqual(thinkingDiagnosticLines(nonThinking, {}), [
+    'Thinking settings:',
+    '- llama3:8b: configurable thinking values unavailable; configured override: none; think will be omitted to use server default'
+  ]);
+
+  const linesWithOverride = thinkingDiagnosticLines(nonThinking, { 'llama3:8b': 'high' });
+  assert.deepEqual(linesWithOverride, [
+    'Thinking settings:',
+    '- llama3:8b: configurable thinking values unavailable; configured override: "high" (ignored); think will be omitted to use server default'
+  ]);
+});
+
+test('handles malformed thinking levels gracefully', () => {
+  const models = [{
+    model: 'gpt-oss:20b',
+    thinkingPolicy: { levels: ['low', 'medium', 'high'], defaultLevel: 'medium' },
+    defaultSource: 'compatibility'
+  }];
+  for (const malformed of [null, undefined, false, 'invalid', [1, 2]]) {
+    const lines = thinkingDiagnosticLines(models, malformed);
+    assert.deepEqual(lines, [
+      'Thinking settings:',
+      '- gpt-oss:20b: supported values: ["low", "medium", "high"]; compatibility fallback default: "medium"; configured override: none; think will be omitted to use server default'
+    ]);
+  }
 });

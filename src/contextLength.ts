@@ -69,8 +69,11 @@ export async function waitForMachineContextCheckBeforeStreaming(
   ]);
 }
 
-export function isMachineContextTooSmall(contextLength: number): boolean {
-  return contextLength < minimumMachineContextLength;
+export function isMachineContextTooSmall(
+  contextLength: number,
+  minimumContextLength = minimumMachineContextLength
+): boolean {
+  return contextLength < minimumContextLength;
 }
 
 export function formatContextLength(contextLength: number): string {
@@ -92,4 +95,43 @@ function isPositiveInteger(value: unknown): value is number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function parseContextExceededError(
+  error: unknown
+): { requestedTokens: number; availableTokens: number } | undefined {
+  const message = typeof error === 'string'
+    ? error
+    : error instanceof Error
+    ? error.message
+    : isRecord(error) && typeof error.message === 'string'
+    ? error.message
+    : String(error ?? '');
+  const match = message.match(
+    /request\s*\((\d+)\s*tokens\)\s*exceeds\s*the\s*available\s*context\s*size\s*\((\d+)\s*tokens\)/i
+  );
+  if (!match) {
+    return undefined;
+  }
+  const requestedTokens = Number(match[1]);
+  const availableTokens = Number(match[2]);
+  if (isPositiveInteger(requestedTokens) && isPositiveInteger(availableTokens)
+    && requestedTokens > availableTokens) {
+    return { requestedTokens, availableTokens };
+  }
+  return undefined;
+}
+
+export function formatContextExceededError(
+  exceeded: { requestedTokens: number; availableTokens: number },
+  contextWindow: number,
+  modelName: string
+): string {
+  const requested = formatContextLength(exceeded.requestedTokens);
+  if (exceeded.requestedTokens > contextWindow) {
+    const limit = formatContextLength(contextWindow);
+    return `Prompt (${requested} tokens) exceeds ${modelName}'s maximum context window (${limit}). Shorten the prompt or remove attachments to continue.`;
+  }
+  const allocated = formatContextLength(exceeded.availableTokens);
+  return `Prompt (${requested} tokens) exceeds the allocated context window (${allocated}) for ${modelName}. Increase the context window or shorten the prompt to continue.`;
 }

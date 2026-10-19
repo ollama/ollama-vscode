@@ -3,6 +3,10 @@ import {
   isMachineContextTooSmall,
   minimumMachineContextLength
 } from './contextLength';
+import {
+  supportedThinkingLevel,
+  type ThinkingPolicy
+} from './thinking';
 
 interface LoadedModel {
   name: string;
@@ -18,6 +22,7 @@ interface OllamaModelList {
 export interface OllamaDiagnosticsConfiguration {
   readonly url: string;
   readonly headers: Readonly<Record<string, string>>;
+  readonly maxContextLength?: number;
 }
 
 export type OllamaDiagnosticsConfigurationSource =
@@ -90,7 +95,8 @@ export function ollamaDiagnosticsClientOptions(
 }
 
 export async function inspectOllamaModels(
-  client: OllamaDiagnosticsClient
+  client: OllamaDiagnosticsClient,
+  maxContextLength?: number
 ): Promise<OllamaModelInspection> {
   const [availableResult, loadedResult] = await Promise.allSettled([
     client.list(),
@@ -111,7 +117,8 @@ export async function inspectOllamaModels(
     inspection.loadedModelLines = await loadedModelContextDiagnosticLines(
       loadedResult.value.models ?? [],
       availableModels,
-      model => client.show({ model })
+      model => client.show({ model }),
+      maxContextLength
     );
   } else {
     inspection.loadedModelsError = loadedResult.reason;
@@ -123,7 +130,8 @@ export async function inspectOllamaModels(
 export async function loadedModelContextDiagnosticLines(
   models: readonly unknown[],
   availableModels: readonly unknown[],
-  getModelMetadata: ModelMetadataLookup
+  getModelMetadata: ModelMetadataLookup,
+  maxContextLength?: number
 ): Promise<string[]> {
   const loadedModels = models
     .map(loadedLocalModel)
@@ -144,7 +152,7 @@ export async function loadedModelContextDiagnosticLines(
         // Maximum context metadata is optional; the runtime allocation remains useful.
       }
     }
-    return loadedModelContextLine(model, maximum);
+    return loadedModelContextLine(model, maximum, maxContextLength);
   }));
 
   return [
@@ -174,6 +182,7 @@ export function maximumSupportedContextLength(metadata: unknown): number | undef
     return undefined;
   }
 
+  let maximum: number | undefined;
   for (const value of [
     positiveInteger(metadata.max_context_length),
     positiveIntegerField(metadata.details, 'max_context_length'),
@@ -183,11 +192,11 @@ export function maximumSupportedContextLength(metadata: unknown): number | undef
     modelInfoContextLength(metadata.model_info, 'context_length')
   ]) {
     if (value !== undefined) {
-      return value;
+      maximum = maximum === undefined ? value : Math.min(maximum, value);
     }
   }
 
-  return undefined;
+  return maximum;
 }
 
 function loadedLocalModel(candidate: unknown): LoadedModel | undefined {
@@ -207,18 +216,28 @@ function loadedLocalModel(candidate: unknown): LoadedModel | undefined {
   };
 }
 
-function loadedModelContextLine(model: LoadedModel, maximum: number | undefined): string {
+function loadedModelContextLine(
+  model: LoadedModel,
+  maximum: number | undefined,
+  maxContextLength: number | undefined
+): string {
   const allocation = model.contextLength === undefined
     ? 'unavailable'
     : formatContextLength(model.contextLength);
   const maximumContext = maximum === undefined
     ? 'unavailable'
     : formatContextLength(maximum);
-  const warningSuffix = model.contextLength !== undefined && isMachineContextTooSmall(model.contextLength)
-    ? `; WARNING: runtime allocation is below the recommended ${formatContextLength(minimumMachineContextLength)}`
+  const minimumContextLength = maxContextLength === undefined
+    ? minimumMachineContextLength
+    : Math.min(minimumMachineContextLength, maxContextLength, maximum ?? maxContextLength);
+  const capSuffix = maxContextLength === undefined
+    ? ''
+    : `; configured context cap: ${formatContextLength(maxContextLength)}`;
+  const warningSuffix = model.contextLength !== undefined && isMachineContextTooSmall(model.contextLength, minimumContextLength)
+    ? `; WARNING: runtime allocation is below the recommended ${formatContextLength(minimumContextLength)}`
     : '';
 
-  return `- ${model.name}: runtime context allocation: ${allocation}; maximum supported context: ${maximumContext}${warningSuffix}`;
+  return `- ${model.name}: runtime context allocation: ${allocation}; maximum supported context: ${maximumContext}${capSuffix}${warningSuffix}`;
 }
 
 function isRemoteModel(model: Record<string, unknown>, name: string): boolean {
@@ -268,10 +287,73 @@ function positiveInteger(value: unknown): number | undefined {
 function copyConfiguration(configuration: OllamaDiagnosticsConfiguration): OllamaDiagnosticsConfiguration {
   return {
     url: configuration.url,
-    headers: { ...configuration.headers }
+    headers: { ...configuration.headers },
+    ...(configuration.maxContextLength === undefined ? {} : { maxContextLength: configuration.maxContextLength })
   };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export interface ThinkingDiagnosticModel {
+  readonly model: string;
+  readonly thinkingPolicy?: ThinkingPolicy;
+  readonly defaultSource?: 'server' | 'compatibility';
+}
+
+export function thinkingDiagnosticLines(
+  models: readonly ThinkingDiagnosticModel[],
+  configuredThinkingLevels?: unknown
+): string[] {
+  const configuredMap = isRecord(configuredThinkingLevels) ? configuredThinkingLevels : undefined;
+  if (models.length === 0) {
+    return [];
+  }
+
+  const lines: string[] = ['Thinking settings:'];
+  for (const model of models) {
+    const policy = model.thinkingPolicy;
+    const rawOverride = configuredMap && Object.hasOwn(configuredMap, model.model)
+      ? configuredMap[model.model]
+      : undefined;
+    if (!policy) {
+      const override = rawOverride === undefined ? 'none' : `${formatThinkingValue(rawOverride)} (ignored)`;
+      lines.push(
+        `- ${model.model}: configurable thinking values unavailable; configured override: ${override}; think will be omitted to use server default`
+      );
+      continue;
+    }
+    const effective = supportedThinkingLevel(policy, rawOverride);
+    const defaultLabel = model.defaultSource === 'server'
+      ? `server-advertised default: ${formatThinkingValue(policy.defaultLevel)}`
+      : model.defaultSource === 'compatibility'
+        ? `compatibility fallback default: ${formatThinkingValue(policy.defaultLevel)}`
+        : `default: ${formatThinkingValue(policy.defaultLevel)}`;
+
+    const supportedList = `supported values: [${policy.levels.map(formatThinkingValue).join(', ')}]`;
+
+    let overrideStatus: string;
+    if (rawOverride === undefined) {
+      overrideStatus = 'configured override: none; think will be omitted to use server default';
+    } else if (effective !== undefined) {
+      overrideStatus = `configured override: ${formatThinkingValue(rawOverride)}; effective setting for next request: ${formatThinkingValue(effective)}`;
+    } else {
+      overrideStatus = `configured override: ${formatThinkingValue(rawOverride)} (unsupported, ignored); think will be omitted to use server default`;
+    }
+
+    lines.push(`- ${model.model}: ${supportedList}; ${defaultLabel}; ${overrideStatus}`);
+  }
+
+  return lines;
+}
+
+function formatThinkingValue(value: unknown): string {
+  if (typeof value === 'boolean') {
+    return String(value);
+  }
+  if (typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+  return String(value);
 }
