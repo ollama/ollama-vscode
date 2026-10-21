@@ -98,9 +98,49 @@ test('counts adjacent text fragments while separating text data parts', async ()
       ]
     };
     assert.equal(await provider.provideTokenCount(model, mixed, token), 3);
+    assert.equal(await provider.provideTokenCount(model, structuredClone(message), token), 2);
+    assert.equal(await provider.provideTokenCount(model, structuredClone(mixed), token), 3);
   } finally {
     provider.dispose();
   }
+});
+
+test('preserves streamed fragments in structural history and calibrates against the joined text', async () => {
+  const requests = [];
+  await withServer(async (request, response) => {
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    requests.push(JSON.parse(body));
+    response.writeHead(200, { 'content-type': 'application/x-ndjson' });
+    response.write(JSON.stringify({ message: { content: 'Hel' } }) + '\n');
+    response.end(JSON.stringify({ message: { content: 'lo' }, done: true, prompt_eval_count: 4 }) + '\n');
+  }, async url => {
+    const provider = new OllamaLanguageModelProvider();
+    const model = { id: 'test-model', name: 'test-model', model: 'test-model', url, headers: {}, local: false };
+    const token = cancellationTokenSource().token;
+    const user = { role: 1, content: [{ value: 'abcd' }, { value: 'efgh' }] };
+    const progress = collectProgress();
+    try {
+      await provider.provideLanguageModelChatResponse(model, [user], {}, progress, token);
+      assert.equal(requests[0].messages[0].content, 'abcdefgh');
+      assert.equal(await provider.provideTokenCount(model, 'x'.repeat(100), token), 34);
+      const fragments = progress.reports.filter(part => part instanceof LanguageModelTextPart);
+      assert.deepEqual(fragments.map(part => part.value), ['Hel', 'lo']);
+      const history = [
+        user,
+        { role: 2, content: structuredClone(fragments) },
+        { role: 1, content: [{ value: 'next' }] }
+      ];
+      await provider.provideLanguageModelChatResponse(model, history, {}, collectProgress(), token);
+      assert.deepEqual(requests[1].messages, [
+        { role: 'user', content: 'abcdefgh' },
+        { role: 'assistant', content: 'Hello' },
+        { role: 'user', content: 'next' }
+      ]);
+    } finally {
+      provider.dispose();
+    }
+  });
 });
 
 for (const { name, options = {}, extraParts = [] } of [
@@ -110,7 +150,9 @@ for (const { name, options = {}, extraParts = [] } of [
   },
   { name: 'tool calls', extraParts: [new LanguageModelToolCallPart('call-1', 'lookup', { q: 'x' })] },
   { name: 'tool results', extraParts: [new LanguageModelToolResultPart('call-1', [new LanguageModelTextPart('result')])] },
-  { name: 'images', extraParts: [new LanguageModelDataPart(new Uint8Array([1, 2, 3]), 'image/png')] }
+  { name: 'images', extraParts: [new LanguageModelDataPart(new Uint8Array([1, 2, 3]), 'image/png')] },
+  { name: 'thinking parts', extraParts: [{ value: 'thinking', id: undefined, metadata: undefined }] },
+  { name: 'serialized text data', extraParts: [{ mimeType: 'text/plain', data: 'aGVsbG8=' }] }
 ]) {
   test(`token calibration ignores prompt overhead from ${name}`, async () => {
     let promptTokens = 1000;
@@ -149,6 +191,28 @@ for (const { name, options = {}, extraParts = [] } of [
     });
   });
 }
+
+test('counts structural text and byte data without decoding serialized data or thinking', async () => {
+  const provider = new OllamaLanguageModelProvider();
+  const model = { id: 'test-model' };
+  const token = cancellationTokenSource().token;
+  const text = 'x'.repeat(100);
+  try {
+    for (const part of [{ value: text }, { mimeType: 'text/plain', data: new TextEncoder().encode(text) }]) {
+      assert.equal(await provider.provideTokenCount(model, { role: 1, content: [part] }, token), 25);
+    }
+    for (const part of [
+      { value: text, id: undefined, metadata: undefined },
+      { $mid: 999, value: text },
+      { mimeType: 'text/plain', data: Buffer.from(text).toString('base64') },
+      new LanguageModelDataPart(Buffer.from(text).toString('base64'), 'text/plain')
+    ]) {
+      assert.equal(await provider.provideTokenCount(model, { role: 1, content: [part] }, token), 0);
+    }
+  } finally {
+    provider.dispose();
+  }
+});
 
 test('token calibration accepts text data parts and low character-per-token ratios', async () => {
   await withServer((request, response) => {
@@ -445,6 +509,10 @@ for (const local of [true, false]) {
           );
         }
         assert.deepEqual(requests.map(request => request.options), [{ temperature: 0.2 }, { temperature: 0.2 }]);
+        for (const request of requests) {
+          assert.equal(request.truncate, local ? false : undefined);
+          assert.equal(Object.hasOwn(request, 'truncate'), local);
+        }
         assert.deepEqual(requests[0].messages, [
           { role: 'user', content: 'a'.repeat(20000), images: ['AQID'] },
           { role: 'assistant', content: '', tool_calls: [{ id: 'read-1', function: { name: 'read_file', arguments: { path: 'app.ts' } } }] },
@@ -502,6 +570,60 @@ test('retries the complete request and checks the context loaded by the retry', 
   } finally {
     vscode.window.showWarningMessage = originalWarning;
   }
+});
+
+test('recovers oversized tool history across retries and provider recreation without trimming it', async () => {
+  await withContextServer((response, body) => {
+    // Ollama 0.35.0's Qwen renderer rejects history after truncation removes
+    // its user query. Disabling truncation exposes the recoverable size error.
+    if (body.truncate !== false) {
+      response.writeHead(500);
+      response.end(JSON.stringify({ error: 'no user query found in messages' }));
+      return;
+    }
+    const allocated = body.options?.num_ctx ?? 4096;
+    if (allocated < 12000) {
+      response.writeHead(400);
+      response.end(JSON.stringify({ error: `request (12000 tokens) exceeds the available context size (${allocated} tokens)` }));
+      return;
+    }
+    response.end(JSON.stringify({ message: { content: 'Recovered' }, done: true }) + '\n');
+  }, async (url, requests) => {
+    let provider = new OllamaLanguageModelProvider();
+    const originalHistory = JSON.stringify(contextMessages);
+    const followup = { role: 1, content: [new LanguageModelTextPart('hi')] };
+    const send = async messages => {
+      const progress = collectProgress();
+      await provider.provideLanguageModelChatResponse(
+        { ...contextModel, url }, messages, {}, progress, cancellationTokenSource().token
+      );
+      assert.equal(progress.reports[0].value, 'Recovered');
+    };
+    try {
+      await send(contextMessages);
+      await send(contextMessages);
+      provider.dispose();
+      provider = new OllamaLanguageModelProvider();
+      await send(contextMessages);
+      await send([...contextMessages, followup]);
+
+      assert.deepEqual(requests.map(request => request.options?.num_ctx), [
+        undefined, 16384, 16384, undefined, 16384, 16384
+      ]);
+      const expectedHistory = [
+        { role: 'user', content: 'a'.repeat(20000), images: ['AQID'] },
+        { role: 'assistant', content: '', tool_calls: [{ id: 'read-1', function: { name: 'read_file', arguments: { path: 'app.ts' } } }] },
+        { role: 'tool', content: 'b'.repeat(48000), tool_call_id: 'read-1' }
+      ];
+      for (const request of requests.slice(0, -1)) {
+        assert.deepEqual(request.messages, expectedHistory);
+      }
+      assert.deepEqual(requests.at(-1).messages, [...expectedHistory, { role: 'user', content: 'hi' }]);
+      assert.equal(JSON.stringify(contextMessages), originalHistory);
+    } finally {
+      provider.dispose();
+    }
+  });
 });
 
 test('reuses successful context sizes until another error or refresh without leaking across configurations', async () => {
