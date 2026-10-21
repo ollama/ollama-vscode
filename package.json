@@ -68,6 +68,11 @@
       {
         "title": "Ollama",
         "properties": {
+          "ollama.autoDiscoverModels": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Automatically discover models from `#ollama.endpoint#`. Turn this off to use only the Ollama connections added through **Chat: Manage Language Models**, avoiding duplicate models when a saved connection uses the same server."
+          },
           "ollama.endpoint": {
             "type": "string",
             "default": "http://127.0.0.1:11434",

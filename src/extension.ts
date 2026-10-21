@@ -20,6 +20,11 @@ export function activate(context: vscode.ExtensionContext) {
     output,
     provider,
     vscode.lm.registerLanguageModelChatProvider(ollamaVendor, provider),
+    vscode.workspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration('ollama.autoDiscoverModels')) {
+        provider.refresh();
+      }
+    }),
     vscode.commands.registerCommand('ollama.refreshModels', () => provider.refresh()),
     vscode.commands.registerCommand('ollama.diagnoseModels', () => diagnoseModels(output, provider))
   );

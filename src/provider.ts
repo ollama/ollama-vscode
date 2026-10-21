@@ -201,6 +201,10 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     token: vscode.CancellationToken
   ): Promise<OllamaLanguageModel[]> {
     const configuration = getConfiguration(options);
+    if (!configuration) {
+      this.output?.appendLine('Automatic Ollama model discovery is disabled; using saved connections only.');
+      return [];
+    }
     const diagnosticsKey = JSON.stringify(configuration);
     this.thinkingDiagnosticGroups.delete(diagnosticsKey);
     this.diagnosticsConfigurations.recordResolved(configuration);
@@ -829,11 +833,16 @@ async function fetchModelRecommendations(
   }
 }
 
-function getConfiguration(options?: vscode.PrepareLanguageModelChatModelOptions): OllamaProviderConfiguration {
+function getConfiguration(options?: vscode.PrepareLanguageModelChatModelOptions): OllamaProviderConfiguration | undefined {
   const configuration = (options as vscode.PrepareLanguageModelChatModelOptions & {
     configuration?: { readonly [key: string]: unknown };
   } | undefined)?.configuration;
   const settings = vscode.workspace.getConfiguration('ollama');
+  // VS Code discovers the automatic connection separately from each saved group.
+  // An empty configuration still represents a saved group using the defaults.
+  if (configuration === undefined && !settings.get<boolean>('autoDiscoverModels', true)) {
+    return undefined;
+  }
   const endpoint = settings.get<string>('endpoint', defaultOllamaURL) || defaultOllamaURL;
 
   return {

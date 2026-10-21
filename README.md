@@ -91,6 +91,11 @@ If Ollama models do not appear:
 3. Run `Ollama: Refresh Models` from the Command Palette.
 4. Run `Ollama: Diagnose Models` and check the `Ollama` output channel.
 
+If models appear twice after adding an Ollama connection through **Chat: Manage
+Language Models**, turn off **Ollama: Auto Discover Models** in VS Code Settings
+(`"ollama.autoDiscoverModels": false`). This uses only your saved connections and
+applies immediately. Turn it back on to use automatic discovery again.
+
 If a cloud model asks you to sign in, run `ollama signin`.
 
 If an inference request takes more than 10 minutes to begin responding, increase
