@@ -114,7 +114,7 @@ test.beforeEach(() => {
 test('leaves the server default unchanged when no effort setting is present', async () => {
   models = [{ name: 'deepseek-v4-flash:cloud', capabilities: ['thinking'], remote_host: 'ollama.com' }];
   const provider = new OllamaLanguageModelProvider();
-  const [model] = await provider.provideLanguageModelChatInformation({ configuration: {} }, cancellationToken);
+  const [model] = await provider.provideLanguageModelChatInformation({}, cancellationToken);
 
   await provider.provideLanguageModelChatResponse(
     model,
@@ -131,7 +131,7 @@ test('leaves the server default unchanged when no effort setting is present', as
 test('omits a stale thinking value from the actual Ollama request', async () => {
   models = [{ name: 'gpt-oss:20b', capabilities: ['thinking'], remote_host: 'ollama.com' }];
   const provider = new OllamaLanguageModelProvider();
-  const [model] = await provider.provideLanguageModelChatInformation({ configuration: {} }, cancellationToken);
+  const [model] = await provider.provideLanguageModelChatInformation({}, cancellationToken);
   settings.thinkingLevels = { 'gpt-oss:20b': 'none' };
 
   await provider.provideLanguageModelChatResponse(
@@ -153,7 +153,7 @@ test('accepts thinking settings only with both a verified policy and server capa
     { name: 'unknown-thinking:cloud', capabilities: ['thinking'], remote_host: 'ollama.com' }
   ];
   const provider = new OllamaLanguageModelProvider();
-  const discovered = await provider.provideLanguageModelChatInformation({ configuration: {} }, cancellationToken);
+  const discovered = await provider.provideLanguageModelChatInformation({}, cancellationToken);
   const policies = Object.fromEntries(discovered.map(model => [
     model.id,
     model.thinkingPolicy
@@ -181,7 +181,7 @@ test('sends each supported setting unchanged and reads edits on the next request
       show: { thinking: { values, default: defaultLevel } } }];
     const provider = new OllamaLanguageModelProvider();
     try {
-      const [model] = await provider.provideLanguageModelChatInformation({ configuration: {} }, cancellationToken);
+      const [model] = await provider.provideLanguageModelChatInformation({}, cancellationToken);
       assert.deepEqual(model.thinkingPolicy.levels, values);
       for (const value of [...values, undefined, 'stale', 1, null, {}]) {
         settings.thinkingLevels = { [model.model]: value };
@@ -202,10 +202,10 @@ test('refreshing metadata rejects a previously supported saved value', async () 
   models = [entry];
   const provider = new OllamaLanguageModelProvider();
   try {
-    await provider.provideLanguageModelChatInformation({ configuration: {} }, cancellationToken);
+    await provider.provideLanguageModelChatInformation({}, cancellationToken);
     entry.show.thinking = { values: [false], default: false };
     provider.refresh();
-    const [model] = await provider.provideLanguageModelChatInformation({ configuration: {} }, cancellationToken);
+    const [model] = await provider.provideLanguageModelChatInformation({}, cancellationToken);
     assert.equal(model.thinkingPolicy, undefined);
     settings.thinkingLevels = { [model.model]: 'high' };
     await provider.provideLanguageModelChatResponse(model, [], {}, { report() {} }, cancellationToken);
@@ -223,7 +223,7 @@ test('uses exact server model identifiers and keeps settings separate for each m
   ];
   const provider = new OllamaLanguageModelProvider();
   try {
-    const discovered = await provider.provideLanguageModelChatInformation({ configuration: {} }, cancellationToken);
+    const discovered = await provider.provideLanguageModelChatInformation({}, cancellationToken);
     settings.thinkingLevels = { 'Display name': 'xhigh', 'gpt-oss:20b': 'high' };
     for (const model of discovered) {
       await provider.provideLanguageModelChatResponse(model, [], {}, { report() {} }, cancellationToken);
@@ -244,7 +244,7 @@ test('ignores malformed maps and inherited effort entries', async () => {
   models = [{ name: 'gpt-oss:20b', capabilities: ['thinking'], remote_host: 'ollama.com' }];
   const provider = new OllamaLanguageModelProvider();
   try {
-    const [model] = await provider.provideLanguageModelChatInformation({ configuration: {} }, cancellationToken);
+    const [model] = await provider.provideLanguageModelChatInformation({}, cancellationToken);
     for (const value of [null, false, 'high', ['high'], Object.create({ 'gpt-oss:20b': 'high' })]) {
       settings.thinkingLevels = value;
       await provider.provideLanguageModelChatResponse(model, [], {}, { report() {} }, cancellationToken);
@@ -260,7 +260,7 @@ test('matches older-server fallback policies using the request identifier instea
   settings.thinkingLevels = { 'gpt-oss:20b': 'high' };
   const provider = new OllamaLanguageModelProvider();
   try {
-    const [model] = await provider.provideLanguageModelChatInformation({ configuration: {} }, cancellationToken);
+    const [model] = await provider.provideLanguageModelChatInformation({}, cancellationToken);
     await provider.provideLanguageModelChatResponse(model, [], {}, { report() {} }, cancellationToken);
     assert.equal(chatRequests.at(-1).model, 'gpt-oss:20b');
     assert.equal(chatRequests.at(-1).think, 'high');
@@ -287,7 +287,7 @@ test('provides thinking diagnostics through provider agreeing with request confi
   settings.thinkingLevels = { 'server/qwen3.8:27b': 'low' };
   const provider = new OllamaLanguageModelProvider();
   try {
-    const discovered = await provider.provideLanguageModelChatInformation({ configuration: {} }, cancellationToken);
+    const discovered = await provider.provideLanguageModelChatInformation({}, cancellationToken);
     const lines = provider.getThinkingDiagnosticLines(settings.thinkingLevels);
     assert.deepEqual(lines, [
       'Thinking settings for http://127.0.0.1:11434/:',
@@ -352,7 +352,7 @@ test('keeps models with missing or non-configurable metadata visible while omitt
   ];
   const provider = new OllamaLanguageModelProvider();
   try {
-    const discovered = await provider.provideLanguageModelChatInformation({ configuration: {} }, cancellationToken);
+    const discovered = await provider.provideLanguageModelChatInformation({}, cancellationToken);
     for (const configuredValue of [undefined, true]) {
       settings.thinkingLevels = configuredValue === undefined ? {}
         : Object.fromEntries(models.map(model => [model.name, configuredValue]));

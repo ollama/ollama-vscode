@@ -63,8 +63,7 @@ HTTP 200 alone does not prove that an effort value took effect.
 
 ## Configuration
 
-Configure the default endpoint and request headers for saved Ollama connections
-in VS Code settings:
+Configure the endpoint and optional request headers in VS Code settings:
 
 ```json
 {
@@ -73,8 +72,7 @@ in VS Code settings:
 }
 ```
 
-Add an Ollama connection through **Chat: Manage Language Models**. VS Code saves
-its configuration in `chatLanguageModels.json`:
+VS Code can also pass provider configuration through `chatLanguageModels.json`:
 
 ```json
 [
@@ -90,8 +88,6 @@ its configuration in `chatLanguageModels.json`:
 
 If `models` is omitted, the extension lists every model returned by `/api/tags`.
 Provider configuration from VS Code takes precedence over workspace settings.
-Discovery runs only for saved connections; configuring `ollama.endpoint` alone
-does not add a connection.
 
 ## Package a VSIX
 

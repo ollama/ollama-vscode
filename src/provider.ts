@@ -211,6 +211,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   ): Promise<OllamaLanguageModel[]> {
     const configuration = getConfiguration(options);
     if (!configuration) {
+      this.output?.appendLine('Automatic Ollama model discovery is disabled; using saved connections only.');
       return [];
     }
     const diagnosticsKey = JSON.stringify(configuration);
@@ -862,13 +863,12 @@ function getConfiguration(options?: vscode.PrepareLanguageModelChatModelOptions)
   const configuration = (options as vscode.PrepareLanguageModelChatModelOptions & {
     configuration?: { readonly [key: string]: unknown };
   } | undefined)?.configuration;
-  // VS Code also calls the provider without a saved connection. Resolving that
-  // call would list the default server again alongside its saved connection.
+  const settings = vscode.workspace.getConfiguration('ollama');
+  // VS Code discovers the automatic connection separately from each saved group.
   // An empty configuration still represents a saved group using the defaults.
-  if (configuration === undefined) {
+  if (configuration === undefined && !settings.get<boolean>('autoDiscoverModels', true)) {
     return undefined;
   }
-  const settings = vscode.workspace.getConfiguration('ollama');
   const endpoint = settings.get<string>('endpoint', defaultOllamaURL) || defaultOllamaURL;
 
   return {
