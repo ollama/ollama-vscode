@@ -155,6 +155,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   private readonly outdatedModelWarnings = new OutdatedModelWarningTracker();
   private readonly machineContextWarnings = new Set<string>();
   private readonly diagnosticsConfigurations = new OllamaDiagnosticsConfigurationTracker();
+  private readonly discoveryRequests = new Set<vscode.CancellationTokenSource>();
   private recoveredContextLengths = new Map<string, number>();
   private readonly thinkingDiagnosticGroups = new Map<string, {
     url: string;
@@ -165,6 +166,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   constructor(private readonly output?: vscode.OutputChannel) {}
 
   refresh() {
+    this.cancelDiscovery();
     this.recoveredContextLengths = new Map();
     this.resetThinkingDiagnostics();
     this.output?.appendLine('Refreshing Ollama language models.');
@@ -172,9 +174,16 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   }
 
   dispose() {
+    this.cancelDiscovery();
     this.recoveredContextLengths = new Map();
     this.resetThinkingDiagnostics();
     this.changeEmitter.dispose();
+  }
+
+  private cancelDiscovery() {
+    for (const source of this.discoveryRequests) {
+      source.cancel();
+    }
   }
 
   selectDiagnosticsConfiguration(
@@ -208,51 +217,68 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     const diagnosticsKey = JSON.stringify(configuration);
     this.thinkingDiagnosticGroups.delete(diagnosticsKey);
     this.diagnosticsConfigurations.recordResolved(configuration);
-    const disposables: vscode.Disposable[] = [];
-    const request = createFetch(token, disposables);
-    const ollama = new Ollama({
-      host: configuration.url,
-      headers: configuration.headers,
-      fetch: request
-    });
-    const version = await ollama.version()
-      .then(response => response.version)
-      .catch(() => undefined);
+    // VS Code can pass CancellationToken.None and queue refreshes behind this call.
+    const source = new vscode.CancellationTokenSource();
+    this.discoveryRequests.add(source);
+    const disposables: vscode.Disposable[] = [source, token.onCancellationRequested(() => source.cancel())];
+    if (token.isCancellationRequested) {
+      source.cancel();
+    }
 
     try {
-      try {
-        const body = await ollama.list();
-        const availableModels = ((body.models ?? []) as unknown[]).filter(isOllamaTagsModel);
-        const recommendations = await fetchModelRecommendations(configuration, request, token, this.output);
-        const models = configuration.models.length > 0
-          ? selectConfiguredModels(configuration.models, availableModels)
-          : availableModels;
-
-        const hydratedModels = await hydrateModels(ollama, models);
-        const versionSuffix = version ? ` with Ollama ${version}` : '';
-        const recommendationSuffix = recommendations.length > 0
-          ? ` using ${recommendations.length} recommendation(s)`
-          : '';
-        this.output?.appendLine(
-          `Providing ${models.length} Ollama model(s) from ${configuration.url}${versionSuffix}${recommendationSuffix}.`
-        );
-
-        const languageModels = hydratedModels.map(({ model, show }) => this.toLanguageModel(
-          model,
-          show,
-          configuration,
-          recommendedReplacement(model.name, availableModels, recommendations),
-          isRecommendedModel(model.name, recommendations)
-        ));
-        this.thinkingDiagnosticGroups.set(diagnosticsKey, {
-          url: configuration.url,
-          models: languageModels
-        });
-        return languageModels;
-      } catch (error) {
-        throw this.userFacingError(error);
+      if (source.token.isCancellationRequested) {
+        return [];
       }
+      const request = createFetch(source.token, disposables);
+      const ollama = new Ollama({
+        host: configuration.url,
+        headers: configuration.headers,
+        fetch: request
+      });
+      const version = await ollama.version()
+        .then(response => response.version)
+        .catch(() => undefined);
+      if (source.token.isCancellationRequested) {
+        return [];
+      }
+      const body = await ollama.list();
+      const availableModels = ((body.models ?? []) as unknown[]).filter(isOllamaTagsModel);
+      const recommendations = await fetchModelRecommendations(configuration, request, source.token, this.output);
+      const models = configuration.models.length > 0
+        ? selectConfiguredModels(configuration.models, availableModels)
+        : availableModels;
+
+      const hydratedModels = await hydrateModels(ollama, models);
+      if (source.token.isCancellationRequested) {
+        return [];
+      }
+      const versionSuffix = version ? ` with Ollama ${version}` : '';
+      const recommendationSuffix = recommendations.length > 0
+        ? ` using ${recommendations.length} recommendation(s)`
+        : '';
+      this.output?.appendLine(
+        `Providing ${models.length} Ollama model(s) from ${configuration.url}${versionSuffix}${recommendationSuffix}.`
+      );
+
+      const languageModels = hydratedModels.map(({ model, show }) => this.toLanguageModel(
+        model,
+        show,
+        configuration,
+        recommendedReplacement(model.name, availableModels, recommendations),
+        isRecommendedModel(model.name, recommendations)
+      ));
+      this.thinkingDiagnosticGroups.set(diagnosticsKey, {
+        url: configuration.url,
+        models: languageModels
+      });
+      return languageModels;
+    } catch (error) {
+      if (source.token.isCancellationRequested) {
+        return [];
+      }
+      throw this.userFacingError(error);
     } finally {
+      this.discoveryRequests.delete(source);
       disposeAll(disposables);
     }
   }

@@ -15,9 +15,22 @@ class EventEmitter {
   dispose() { this.listeners.clear(); }
 }
 
+class CancellationTokenSource {
+  emitter = new EventEmitter();
+  token = { isCancellationRequested: false, onCancellationRequested: this.emitter.event };
+  cancel() {
+    if (!this.token.isCancellationRequested) {
+      this.token.isCancellationRequested = true;
+      this.emitter.fire();
+    }
+  }
+  dispose() { this.emitter.dispose(); }
+}
+
 let settings = {};
 const vscode = {
   EventEmitter,
+  CancellationTokenSource,
   workspace: { getConfiguration: () => ({ get: (key, fallback) => settings[key] ?? fallback }) }
 };
 const originalLoad = Module._load;
@@ -40,12 +53,18 @@ const tags = [
 ];
 const ids = tags.map(model => model.model ?? model.name);
 
-async function fixture(t) {
+async function fixture(t, stallPath) {
   const requests = [];
+  let stalled;
+  const whenStalled = new Promise(resolve => { stalled = resolve; });
   const server = http.createServer(async (request, response) => {
     let body = '';
     for await (const chunk of request) body += chunk;
     requests.push({ path: request.url, headers: request.headers });
+    if (request.url === stallPath) {
+      stalled();
+      return;
+    }
     response.setHeader('Content-Type', 'application/json');
     let result;
     switch (request.url) {
@@ -65,7 +84,7 @@ async function fixture(t) {
     server.closeAllConnections();
     server.close(error => error ? reject(error) : resolve());
   }));
-  return { url: `http://127.0.0.1:${server.address().port}`, requests };
+  return { url: `http://127.0.0.1:${server.address().port}`, requests, whenStalled };
 }
 
 function provider(t) {
@@ -136,6 +155,58 @@ test('saved groups using default settings still work with automatic discovery di
     assert.ok(models.every(model => model.headers['X-Fixture-Group'] === 'default'));
   }
   assert.equal(server.requests.filter(request => request.path === '/api/tags').length, 2);
+});
+
+test('disabling discovery interrupts each HTTP phase before resolving saved groups', async t => {
+  const phases = ['/api/version', '/api/tags', '/api/experimental/model-recommendations', '/api/show'];
+  for (const phase of phases) {
+    await t.test(phase, { timeout: 3000 }, async t => {
+      const automatic = await fixture(t, phase);
+      const saved = await fixture(t);
+      settings = { endpoint: automatic.url };
+      const value = provider(t);
+      const pending = value.provideLanguageModelChatInformation({}, token);
+      await automatic.whenStalled;
+      settings.autoDiscoverModels = false;
+      value.refresh();
+
+      assert.deepEqual(await pending, []);
+      assert.ok(automatic.requests.every(request => phases.indexOf(request.path) <= phases.indexOf(phase)));
+      const models = await value.provideLanguageModelChatInformation({ configuration: { url: saved.url } }, token);
+      assert.deepEqual(models.map(model => model.id), ids);
+    });
+  }
+});
+
+test('disposal and caller cancellation interrupt discovery', async t => {
+  for (const action of ['dispose', 'cancel']) {
+    await t.test(action, { timeout: 3000 }, async t => {
+      const server = await fixture(t, '/api/tags');
+      settings = { endpoint: server.url };
+      const value = provider(t);
+      const source = new CancellationTokenSource();
+      t.after(() => source.dispose());
+      const pending = value.provideLanguageModelChatInformation({ configuration: {} }, source.token);
+      await server.whenStalled;
+      if (action === 'dispose') value.dispose();
+      else source.cancel();
+      assert.deepEqual(await pending, []);
+      assert.equal(source.emitter.listeners.size, 0);
+      assert.deepEqual(server.requests.map(request => request.path), ['/api/version', '/api/tags']);
+    });
+  }
+});
+
+test('already-cancelled discovery makes no requests', async t => {
+  const server = await fixture(t);
+  settings = { endpoint: server.url };
+  const value = provider(t);
+  const source = new CancellationTokenSource();
+  t.after(() => source.dispose());
+  source.cancel();
+  assert.deepEqual(await value.provideLanguageModelChatInformation({}, source.token), []);
+  assert.deepEqual(server.requests, []);
+  assert.equal(source.emitter.listeners.size, 0);
 });
 
 test('provider endpoints, headers and model filters remain independent for matching IDs', async t => {
