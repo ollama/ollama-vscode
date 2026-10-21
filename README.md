@@ -31,11 +31,14 @@ Local models do not require sign-in. Run `ollama signin` to use cloud models.
 
 1. Install the Ollama extension from the VS Code Marketplace.
 2. Start Ollama.
-3. Open Chat in VS Code.
-4. Open the model picker at the bottom of the chat input.
-5. Choose a model from the `Ollama` section.
+3. Open the Command Palette and run **Chat: Manage Language Models**.
+4. Add an **Ollama** connection using `http://127.0.0.1:11434` for a local
+   server, or your Ollama server's URL.
+5. Open Chat and choose an Ollama model from the model picker.
 
-The extension discovers models from `http://127.0.0.1:11434` by default.
+Models load from your saved connections. If you previously used automatic
+discovery, add your server once through **Chat: Manage Language Models**.
+Existing saved connections continue to work.
 
 ## Thinking effort
 
@@ -88,13 +91,13 @@ If Ollama models do not appear:
 
 1. Make sure Ollama is running.
 2. Run `ollama list` and confirm models are available.
-3. Run `Ollama: Refresh Models` from the Command Palette.
-4. Run `Ollama: Diagnose Models` and check the `Ollama` output channel.
+3. Run **Chat: Manage Language Models** and check that you have an Ollama
+   connection with the correct server URL.
+4. Run `Ollama: Refresh Models` from the Command Palette.
+5. Run `Ollama: Diagnose Models` and check the `Ollama` output channel.
 
-If models appear twice after adding an Ollama connection through **Chat: Manage
-Language Models**, turn off **Ollama: Auto Discover Models** in VS Code Settings
-(`"ollama.autoDiscoverModels": false`). This uses only your saved connections and
-applies immediately. Turn it back on to use automatic discovery again.
+Each saved connection has its own model list. If models appear twice, check for
+duplicate Ollama connections in **Chat: Manage Language Models**.
 
 If a cloud model asks you to sign in, run `ollama signin`.
 

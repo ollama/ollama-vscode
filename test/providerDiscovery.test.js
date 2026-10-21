@@ -4,7 +4,7 @@ const Module = require('node:module');
 const test = require('node:test');
 
 // Exercise discovery with the real Ollama client; only the VS Code API is mocked.
-// VS Code's aggregation of default and configured provider groups needs a host test.
+// VS Code's aggregation of saved provider groups also needs a host test.
 class EventEmitter {
   listeners = new Set();
   event = listener => {
@@ -101,7 +101,7 @@ test('unique tags stay unique across repeated discovery and refresh', async t =>
   value.onDidChangeLanguageModelChatInformation(() => refreshes++);
   for (let i = 0; i < 3; i++) {
     if (i > 0) value.refresh();
-    const models = await value.provideLanguageModelChatInformation({}, token);
+    const models = await value.provideLanguageModelChatInformation({ configuration: {} }, token);
     assert.deepEqual(models.map(model => model.id), ids);
     assert.deepEqual(models.map(model => model.capabilities), [
       { toolCalling: true, imageInput: true },
@@ -114,38 +114,36 @@ test('unique tags stay unique across repeated discovery and refresh', async t =>
   assert.equal(server.requests.filter(request => request.path === '/api/tags').length, 3);
 });
 
-test('default and configured discovery each return a complete independent model list', async t => {
+test('automatic and saved discovery load the same server only through the saved connection', async t => {
   const server = await fixture(t);
   settings = { endpoint: server.url };
   const value = provider(t);
-  for (const options of [{}, { configuration: { url: server.url } }, {}]) {
-    const models = await value.provideLanguageModelChatInformation(options, token);
-    assert.deepEqual(models.map(model => model.id), ids);
-    assert.ok(models.every(model => model.url === server.url));
+  for (let i = 0; i < 3; i++) {
+    if (i > 0) value.refresh();
+    const requestCount = server.requests.length;
+    assert.deepEqual(await value.provideLanguageModelChatInformation({}, token), []);
+    assert.equal(server.requests.length, requestCount);
+    const saved = await value.provideLanguageModelChatInformation({ configuration: { url: server.url } }, token);
+    assert.deepEqual(saved.map(model => model.id), ids);
+    assert.ok(saved.every(model => model.url === server.url));
   }
+  assert.equal(server.requests.filter(request => request.path === '/api/tags').length, 3);
 });
 
-test('disabling automatic discovery skips all default requests and can be reversed', async t => {
+test('discovery without a saved connection makes no requests', async t => {
   const server = await fixture(t);
-  settings = { endpoint: server.url, autoDiscoverModels: false };
+  settings = { endpoint: server.url };
   const value = provider(t);
-  for (let i = 0; i < 3; i++) {
+  for (const options of [{}, { silent: true }, { silent: false, configuration: undefined }]) {
     value.refresh();
-    assert.deepEqual(await value.provideLanguageModelChatInformation({}, token), []);
+    assert.deepEqual(await value.provideLanguageModelChatInformation(options, token), []);
   }
   assert.deepEqual(server.requests, []);
-
-  settings.autoDiscoverModels = true;
-  assert.deepEqual((await value.provideLanguageModelChatInformation({}, token)).map(model => model.id), ids);
-  const requestCount = server.requests.length;
-  settings.autoDiscoverModels = false;
-  assert.deepEqual(await value.provideLanguageModelChatInformation({}, token), []);
-  assert.equal(server.requests.length, requestCount);
 });
 
-test('saved groups using default settings still work with automatic discovery disabled', async t => {
+test('saved groups without overrides use the default endpoint and headers', async t => {
   const server = await fixture(t);
-  settings = { endpoint: server.url, headers: { 'X-Fixture-Group': 'default' }, autoDiscoverModels: false };
+  settings = { endpoint: server.url, headers: { 'X-Fixture-Group': 'default' } };
   const value = provider(t);
   // Even identical saved groups are independent identities in VS Code.
   for (let i = 0; i < 2; i++) {
@@ -157,21 +155,20 @@ test('saved groups using default settings still work with automatic discovery di
   assert.equal(server.requests.filter(request => request.path === '/api/tags').length, 2);
 });
 
-test('disabling discovery interrupts each HTTP phase before resolving saved groups', async t => {
+test('refresh interrupts each HTTP phase before resolving an updated saved connection', async t => {
   const phases = ['/api/version', '/api/tags', '/api/experimental/model-recommendations', '/api/show'];
   for (const phase of phases) {
     await t.test(phase, { timeout: 3000 }, async t => {
-      const automatic = await fixture(t, phase);
+      const stalled = await fixture(t, phase);
       const saved = await fixture(t);
-      settings = { endpoint: automatic.url };
+      settings = { endpoint: stalled.url };
       const value = provider(t);
-      const pending = value.provideLanguageModelChatInformation({}, token);
-      await automatic.whenStalled;
-      settings.autoDiscoverModels = false;
+      const pending = value.provideLanguageModelChatInformation({ configuration: {} }, token);
+      await stalled.whenStalled;
       value.refresh();
 
       assert.deepEqual(await pending, []);
-      assert.ok(automatic.requests.every(request => phases.indexOf(request.path) <= phases.indexOf(phase)));
+      assert.ok(stalled.requests.every(request => phases.indexOf(request.path) <= phases.indexOf(phase)));
       const models = await value.provideLanguageModelChatInformation({ configuration: { url: saved.url } }, token);
       assert.deepEqual(models.map(model => model.id), ids);
     });
@@ -204,7 +201,7 @@ test('already-cancelled discovery makes no requests', async t => {
   const source = new CancellationTokenSource();
   t.after(() => source.dispose());
   source.cancel();
-  assert.deepEqual(await value.provideLanguageModelChatInformation({}, source.token), []);
+  assert.deepEqual(await value.provideLanguageModelChatInformation({ configuration: {} }, source.token), []);
   assert.deepEqual(server.requests, []);
   assert.equal(source.emitter.listeners.size, 0);
 });
@@ -214,9 +211,8 @@ test('provider endpoints, headers and model filters remain independent for match
   const second = await fixture(t);
   settings = { endpoint: first.url, headers: { 'X-Fixture-Group': 'default' } };
   const value = provider(t);
-  const defaults = await value.provideLanguageModelChatInformation({}, token);
+  const defaults = await value.provideLanguageModelChatInformation({ configuration: {} }, token);
   assert.deepEqual(defaults.map(model => model.id), ids);
-  settings.autoDiscoverModels = false;
   for (const url of [first.url, second.url]) {
     const models = await value.provideLanguageModelChatInformation({ configuration: {
       url, models: [ids[0], ids[3]], headers: { 'X-Fixture-Group': 'configured' }
