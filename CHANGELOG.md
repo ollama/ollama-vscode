@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.0.14
+
+### What's Changed
+
+- Local chats now preserve user messages and tool history during context recovery,
+  with improved handling of chat messages and tool results from VS Code.
+  [#93](https://github.com/ollama/ollama-vscode/pull/93)
+- Fixed extra line breaks being inserted into streamed replies when they are sent
+  back as chat history.
+  [#85](https://github.com/ollama/ollama-vscode/pull/85)
+- Stopping a chat now discards buffered text and tool calls and cleans up the
+  request.
+  [#98](https://github.com/ollama/ollama-vscode/pull/98)
+
+### New Contributors
+
+- @agammann made their first contribution in
+  [#85](https://github.com/ollama/ollama-vscode/pull/85)
+
+**Full Changelog**: [v0.0.13...v0.0.14](https://github.com/ollama/ollama-vscode/compare/v0.0.13...v0.0.14)
+
 ## 0.0.13
 
 ### What's Changed
