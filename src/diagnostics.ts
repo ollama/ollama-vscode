@@ -280,6 +280,59 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+export interface ModelCapabilityDiagnostic {
+  readonly model: string;
+  readonly capabilities?: {
+    readonly toolCalling?: boolean | number;
+    readonly imageInput?: boolean;
+  };
+  readonly maxInputTokens?: number;
+  readonly maxOutputTokens?: number;
+}
+
+export function modelCapabilityDiagnosticLines(
+  models: readonly ModelCapabilityDiagnostic[]
+): string[] {
+  if (models.length === 0) {
+    return [];
+  }
+
+  const lines: string[] = ['Model capabilities:'];
+  let anyLacksTools = false;
+
+  for (const model of models) {
+    const toolCapability = model.capabilities?.toolCalling;
+    const hasTools = typeof toolCapability === 'number' ? toolCapability > 0 : Boolean(toolCapability);
+    const tools = typeof toolCapability === 'number' && toolCapability > 0
+      ? `yes (up to ${toolCapability} tools)`
+      : hasTools
+        ? 'yes'
+        : 'no';
+    if (!hasTools) {
+      anyLacksTools = true;
+    }
+    const vision = model.capabilities?.imageInput ? 'yes' : 'no';
+    const inputLimit = model.maxInputTokens !== undefined
+      ? formatContextLength(model.maxInputTokens)
+      : 'unavailable';
+    const outputLimit = model.maxOutputTokens !== undefined
+      ? formatContextLength(model.maxOutputTokens)
+      : 'unavailable';
+
+    lines.push(
+      `- ${model.model}: tool calling: ${tools}; vision: ${vision}; max input: ${inputLimit}; max output: ${outputLimit}`
+    );
+  }
+
+  if (anyLacksTools) {
+    lines.push(
+      '  Note: VS Code Copilot Agent mode requires tool calling (tool calling: yes). Models without tool support do not appear in the Agent model picker; to chat with them without tools, run "Chat: Open Chat (Ask)" (workbench.action.chat.openask).'
+    );
+  }
+
+  return lines;
+}
+
 export interface ThinkingDiagnosticModel {
   readonly model: string;
   readonly thinkingPolicy?: ThinkingPolicy;

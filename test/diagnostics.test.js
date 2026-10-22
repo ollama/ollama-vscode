@@ -4,6 +4,7 @@ const {
   inspectOllamaModels,
   loadedModelContextDiagnosticLines,
   maximumSupportedContextLength,
+  modelCapabilityDiagnosticLines,
   OllamaDiagnosticsConfigurationTracker,
   ollamaDiagnosticsClientOptions,
   thinkingDiagnosticLines
@@ -280,4 +281,69 @@ test('handles malformed thinking levels gracefully', () => {
       '- gpt-oss:20b: supported values: ["low", "medium", "high"]; compatibility fallback default: "medium"; configured override: none; think will be omitted to use server default'
     ]);
   }
+});
+
+test('modelCapabilityDiagnosticLines returns empty array for empty models list', () => {
+  assert.deepEqual(modelCapabilityDiagnosticLines([]), []);
+});
+
+test('formats model capability diagnostics for tool-capable models without warning note', () => {
+  const models = [
+    {
+      model: 'qwen2.5-coder:7b',
+      capabilities: { toolCalling: true, imageInput: false },
+      maxInputTokens: 32768,
+      maxOutputTokens: 4096
+    },
+    {
+      model: 'llava:latest',
+      capabilities: { toolCalling: 64, imageInput: true },
+      maxInputTokens: 8192,
+      maxOutputTokens: 2048
+    }
+  ];
+  const lines = modelCapabilityDiagnosticLines(models);
+  assert.deepEqual(lines, [
+    'Model capabilities:',
+    '- qwen2.5-coder:7b: tool calling: yes; vision: no; max input: 32K; max output: 4K',
+    '- llava:latest: tool calling: yes (up to 64 tools); vision: yes; max input: 8K; max output: 2K'
+  ]);
+});
+
+test('explains why non-tool models do not appear in Agent picker and advises Chat: Open Chat (Ask)', () => {
+  const models = [
+    {
+      model: 'qwen2.5-coder:7b',
+      capabilities: { toolCalling: true, imageInput: false },
+      maxInputTokens: 32768,
+      maxOutputTokens: 4096
+    },
+    {
+      model: 'phi3:latest',
+      capabilities: { toolCalling: false, imageInput: false },
+      maxInputTokens: 131072,
+      maxOutputTokens: 4096
+    }
+  ];
+  const lines = modelCapabilityDiagnosticLines(models);
+  assert.deepEqual(lines, [
+    'Model capabilities:',
+    '- qwen2.5-coder:7b: tool calling: yes; vision: no; max input: 32K; max output: 4K',
+    '- phi3:latest: tool calling: no; vision: no; max input: 128K; max output: 4K',
+    '  Note: VS Code Copilot Agent mode requires tool calling (tool calling: yes). Models without tool support do not appear in the Agent model picker; to chat with them without tools, run "Chat: Open Chat (Ask)" (workbench.action.chat.openask).'
+  ]);
+});
+
+test('handles models with missing token limits or undefined capabilities gracefully', () => {
+  const models = [
+    {
+      model: 'custom-model:latest'
+    }
+  ];
+  const lines = modelCapabilityDiagnosticLines(models);
+  assert.deepEqual(lines, [
+    'Model capabilities:',
+    '- custom-model:latest: tool calling: no; vision: no; max input: unavailable; max output: unavailable',
+    '  Note: VS Code Copilot Agent mode requires tool calling (tool calling: yes). Models without tool support do not appear in the Agent model picker; to chat with them without tools, run "Chat: Open Chat (Ask)" (workbench.action.chat.openask).'
+  ]);
 });

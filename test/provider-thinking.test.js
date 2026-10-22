@@ -372,3 +372,33 @@ test('keeps models with missing or non-configurable metadata visible while omitt
     provider.dispose();
   }
 });
+
+test('provides model capability diagnostics through provider agreeing with registered models', async () => {
+  models = [
+    {
+      name: 'Qwen Display',
+      model: 'server/qwen3.8:27b',
+      capabilities: ['tools'],
+      remote_host: 'ollama.com',
+      details: { context_length: 32768 }
+    },
+    {
+      name: 'phi3:latest',
+      remote_host: 'ollama.com',
+      details: { context_length: 131072 }
+    }
+  ];
+  const provider = new OllamaLanguageModelProvider();
+  try {
+    await provider.provideLanguageModelChatInformation({}, cancellationToken);
+    const lines = provider.getModelCapabilityDiagnosticLines();
+    assert.deepEqual(lines, [
+      'Model capabilities for http://127.0.0.1:11434/:',
+      '- server/qwen3.8:27b: tool calling: yes; vision: no; max input: 28K; max output: 4K',
+      '- phi3:latest: tool calling: no; vision: no; max input: 124K; max output: 4K',
+      '  Note: VS Code Copilot Agent mode requires tool calling (tool calling: yes). Models without tool support do not appear in the Agent model picker; to chat with them without tools, run "Chat: Open Chat (Ask)" (workbench.action.chat.openask).'
+    ]);
+  } finally {
+    provider.dispose();
+  }
+});

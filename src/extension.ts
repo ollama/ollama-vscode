@@ -41,6 +41,10 @@ async function diagnoseModels(output: vscode.OutputChannel, provider: OllamaLang
   const ollamaVSCodeModels = allVSCodeModels.filter(model => model.vendor === ollamaVendor);
   output.appendLine(`VS Code returned ${ollamaVSCodeModels.length} Ollama language model(s).`);
 
+  for (const line of provider.getModelCapabilityDiagnosticLines()) {
+    output.appendLine(line);
+  }
+
   const settings = vscode.workspace.getConfiguration('ollama');
   for (const line of provider.getThinkingDiagnosticLines(settings.get<unknown>('thinkingLevels'))) {
     output.appendLine(line);
