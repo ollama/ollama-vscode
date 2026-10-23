@@ -21,7 +21,8 @@ test('uses the most recently resolved provider group when the workspace endpoint
   });
   tracker.recordResolved({
     url: 'https://provider.example.test',
-    headers: { Authorization: 'Bearer provider' }
+    headers: { Authorization: 'Bearer provider' },
+    maxContextLength: 32768
   });
 
   const selected = tracker.select(workspaceConfiguration);
@@ -29,7 +30,8 @@ test('uses the most recently resolved provider group when the workspace endpoint
   assert.equal(selected.source, 'resolved-provider-group');
   assert.deepEqual(selected.configuration, {
     url: 'https://provider.example.test',
-    headers: { Authorization: 'Bearer provider' }
+    headers: { Authorization: 'Bearer provider' },
+    maxContextLength: 32768
   });
 });
 
@@ -41,7 +43,8 @@ test('prefers the most recently used provider group for diagnostics', () => {
   });
   tracker.recordUsed({
     url: 'https://used.example.test',
-    headers: { 'X-Ollama-Group': 'used' }
+    headers: { 'X-Ollama-Group': 'used' },
+    maxContextLength: 8192
   });
 
   const selected = tracker.select({
@@ -52,7 +55,8 @@ test('prefers the most recently used provider group for diagnostics', () => {
   assert.equal(selected.source, 'used-provider-group');
   assert.deepEqual(selected.configuration, {
     url: 'https://used.example.test',
-    headers: { 'X-Ollama-Group': 'used' }
+    headers: { 'X-Ollama-Group': 'used' },
+    maxContextLength: 8192
   });
 });
 
@@ -98,6 +102,35 @@ test('queries loaded models and reuses tags metadata through the diagnostics cli
   assert.deepEqual(inspection.loadedModelLines, [
     'Ollama reports 1 loaded local model(s):',
     '- gemma3:latest: runtime context allocation: 32K; maximum supported context: 128K; WARNING: runtime allocation is below the recommended 64K'
+  ]);
+});
+
+test('reports a manual context cap without recommending allocations beyond it or native capacity', async () => {
+  const inspection = await inspectOllamaModels({
+    async list() {
+      return { models: [
+        { name: 'capped', context_length: 131072 },
+        { name: 'underallocated', context_length: 131072 },
+        { name: 'small-native', max_context_length: 131072, model_info: { 'llama.context_length': 8192 } }
+      ] };
+    },
+    async ps() {
+      return { models: [
+        { name: 'capped', context_length: 32768 },
+        { name: 'underallocated', context_length: 4096 },
+        { name: 'small-native', context_length: 8192 }
+      ] };
+    },
+    async show() {
+      assert.fail('tag metadata should avoid an additional lookup');
+    }
+  }, 32768);
+
+  assert.deepEqual(inspection.loadedModelLines, [
+    'Ollama reports 3 loaded local model(s):',
+    '- capped: runtime context allocation: 32K; maximum supported context: 128K; configured context cap: 32K',
+    '- underallocated: runtime context allocation: 4K; maximum supported context: 128K; configured context cap: 32K; WARNING: runtime allocation is below the recommended 32K',
+    '- small-native: runtime context allocation: 8K; maximum supported context: 8K; configured context cap: 32K'
   ]);
 });
 

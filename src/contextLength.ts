@@ -69,8 +69,11 @@ export async function waitForMachineContextCheckBeforeStreaming(
   ]);
 }
 
-export function isMachineContextTooSmall(contextLength: number): boolean {
-  return contextLength < minimumMachineContextLength;
+export function isMachineContextTooSmall(
+  contextLength: number,
+  minimumContextLength = minimumMachineContextLength
+): boolean {
+  return contextLength < minimumContextLength;
 }
 
 export function formatContextLength(contextLength: number): string {

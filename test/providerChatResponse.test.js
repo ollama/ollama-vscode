@@ -773,6 +773,112 @@ test('does not replay tool calls after a streamed context error', async () => {
   });
 });
 
+test('respects the bounded request when warning about a manual context cap', async () => {
+  const warnings = [];
+  const originalWarning = vscode.window.showWarningMessage;
+  vscode.window.showWarningMessage = async message => { warnings.push(message); };
+  try {
+    for (const { cap, input = 28672, explicit, allocated, warning } of [
+      { cap: 32768, allocated: 32768 },
+      { cap: 32768, explicit: 4096, allocated: 4096 },
+      { cap: 65536, input: 4096, allocated: 8192 },
+      { cap: 32768, allocated: 4096, warning: '32K' },
+      { allocated: 32768, warning: '64K' }
+    ]) {
+      warnings.length = 0;
+      await withContextServer(response => {
+        response.end(JSON.stringify({ done: true }) + '\n');
+      }, async url => {
+        const provider = new OllamaLanguageModelProvider();
+        try {
+          await provider.provideLanguageModelChatResponse(
+            { ...contextModel, url, maxContextLength: cap, maxInputTokens: input }, [],
+            { modelOptions: explicit === undefined ? undefined : { num_ctx: explicit } },
+            collectProgress(), cancellationTokenSource().token
+          );
+          assert.equal(warnings.length, warning ? 1 : 0);
+          if (warning) assert.match(warnings[0], new RegExp(`at least ${warning}`));
+        } finally {
+          provider.dispose();
+        }
+      }, () => [{ model: contextModel.model, context_length: allocated }]);
+    }
+  } finally {
+    vscode.window.showWarningMessage = originalWarning;
+  }
+});
+
+test('does not grow past a manual cap when Ollama rejects the capped request', async () => {
+  for (const requested of [7000, 9000]) {
+    await withContextServer(response => {
+      response.writeHead(400);
+      response.end(JSON.stringify({ error: `request (${requested} tokens) exceeds the available context size (4096 tokens)` }));
+    }, async (url, requests) => {
+      const provider = new OllamaLanguageModelProvider();
+      const model = { ...contextModel, url, maxContextLength: 8192, maxInputTokens: 4096 };
+      try {
+        await assert.rejects(provider.provideLanguageModelChatResponse(
+          model, contextMessages, {}, collectProgress(), cancellationTokenSource().token
+        ), requested > 8192 ? /maximum context window \(8K\)/ : /allocated context window \(4K\)/);
+        assert.deepEqual(requests.map(request => request.options?.num_ctx), [8192]);
+      } finally {
+        provider.dispose();
+      }
+    });
+  }
+});
+
+test('keeps a smaller explicit num_ctx and does not recover beyond it under a manual cap', async () => {
+  await withContextServer(response => {
+    response.writeHead(400);
+    response.end(JSON.stringify({ error: 'request (7000 tokens) exceeds the available context size (4096 tokens)' }));
+  }, async (url, requests) => {
+    const provider = new OllamaLanguageModelProvider();
+    const options = { modelOptions: { num_ctx: 4096, temperature: 0.2 } };
+    try {
+      await assert.rejects(provider.provideLanguageModelChatResponse(
+        { ...contextModel, url, maxContextLength: 8192, maxInputTokens: 4096 },
+        contextMessages, options, collectProgress(), cancellationTokenSource().token
+      ), /allocated context window \(4K\)/);
+      assert.deepEqual(requests.map(request => request.options), [options.modelOptions]);
+      assert.deepEqual(options.modelOptions, { num_ctx: 4096, temperature: 0.2 });
+    } finally {
+      provider.dispose();
+    }
+  });
+});
+
+test('bounds cached context and recovery retries by a newly configured manual cap', async () => {
+  await withContextServer((response, body, attempt) => {
+    if (attempt === 1 || attempt === 4) {
+      response.writeHead(400);
+      response.end(JSON.stringify({ error: attempt === 1
+        ? 'request (12000 tokens) exceeds the available context size (4096 tokens)'
+        : 'request (30000 tokens) exceeds the available context size (16384 tokens)' }));
+      return;
+    }
+    response.end(JSON.stringify({ done: true }) + '\n');
+  }, async (url, requests) => {
+    const provider = new OllamaLanguageModelProvider();
+    const model = { ...contextModel, url };
+    const token = cancellationTokenSource().token;
+    try {
+      await provider.provideLanguageModelChatResponse(model, [], {}, collectProgress(), token);
+      await provider.provideLanguageModelChatResponse(
+        { ...model, maxContextLength: 8192, maxInputTokens: 4096 }, [], {}, collectProgress(), token
+      );
+      // This cap equals the model's native window, so its smaller cached allocation
+      // can be reused. Recovery must clamp rounding and the output reserve to 32K.
+      await provider.provideLanguageModelChatResponse(
+        { ...model, maxContextLength: 32768 }, [], {}, collectProgress(), token
+      );
+      assert.deepEqual(requests.map(request => request.options?.num_ctx), [undefined, 16384, 8192, 16384, 32768]);
+    } finally {
+      provider.dispose();
+    }
+  });
+});
+
 test('uses the server model identifier for metadata and chat while preserving the display name', async () => {
   const tags = [{ name: 'qwen3.8:27b', model: '5090.qwen3.8:27b' }];
   await withModelServer(tags, ['5090.qwen3.8:27b'], async (url, requests) => {
@@ -834,19 +940,74 @@ test('preserves older-model guidance when a server prefixes its identifier', asy
   }
 });
 
-test('recognizes cloud identifiers behind display names and preserves name-only cloud models', async () => {
+test('caps local models while preserving cloud limits for global and provider settings', async () => {
+  settings.maxContextLength = 8192;
   const tags = [
+    { name: 'local:latest' },
     { name: 'Cloud model', model: 'qwen3.8:cloud' },
-    { name: 'qwen3.8:27b-cloud' }
+    { name: 'qwen3.8:27b-cloud' },
+    { name: 'cloud-alias:latest', remote_host: 'https://ollama.com',
+      capabilities: ['tools'], model_info: { context_length: 131072 } }
   ];
-  const identifiers = ['qwen3.8:cloud', 'qwen3.8:27b-cloud'];
-  await withModelServer(tags, identifiers, async url => {
-    const models = await discoverModels(url);
-    for (const model of models) {
-      assert.equal(model.local, false);
-      await runChatResponse(url, collectProgress(), {}, model);
+  const identifiers = tags.map(model => model.model ?? model.name);
+  await withModelServer(tags, identifiers, async (url, requests) => {
+    for (const maxContextLength of [undefined, 65536]) {
+      const [local, ...cloud] = await discoverModels(url, [], { maxContextLength });
+      assert.equal(local.local, true);
+      assert.equal(local.maxInputTokens + local.maxOutputTokens, maxContextLength ?? 8192);
+      await runChatResponse(url, collectProgress(), {}, local);
+      assert.equal(requests.at(-1).options.num_ctx, maxContextLength ?? 8192);
+      for (const model of cloud) {
+        assert.equal(model.local, false);
+        assert.equal(model.maxInputTokens, 131072 - 4096);
+        assert.equal(model.maxOutputTokens, 4096);
+        await runChatResponse(url, collectProgress(), {}, model);
+        assert.equal(requests.at(-1).options, undefined);
+        await runChatResponse(url, collectProgress(), { modelOptions: { num_ctx: 100000 } }, model);
+        assert.equal(requests.at(-1).options.num_ctx, 100000);
+      }
     }
   });
+});
+
+test('bounds explicit local request options by the manual cap without mutating them', async () => {
+  settings.maxContextLength = 8192;
+  await withModelServer([{ name: 'local:latest' }], ['local:latest'], async (url, requests) => {
+    const [model] = await discoverModels(url);
+    for (const num_ctx of [4096, 65536, 0, -1]) {
+      const options = { modelOptions: { num_ctx, temperature: 0.2 } };
+      await runChatResponse(url, collectProgress(), options, model);
+      assert.deepEqual(requests.at(-1).options, {
+        num_ctx: num_ctx === 4096 ? 4096 : 8192, temperature: 0.2
+      });
+      assert.deepEqual(options.modelOptions, { num_ctx, temperature: 0.2 });
+    }
+  });
+});
+
+test('keeps configured context within native capacity and honors smaller model allocations', async () => {
+  const tags = [{ name: 'local:latest' }];
+  for (const metadata of [
+    { parameters: 'num_ctx 131072' },
+    { modelfile: 'PARAMETER num_ctx 131072' },
+    { max_context_length: 131072 }
+  ]) {
+    await withModelServer(tags, ['local:latest'], async (url, requests) => {
+      for (const maxContextLength of [undefined, 65536]) {
+        const [model] = await discoverModels(url, [], { maxContextLength });
+        assert.equal(model.maxInputTokens + model.maxOutputTokens, 8192);
+        if (maxContextLength !== undefined) {
+          await runChatResponse(url, collectProgress(), { modelOptions: { num_ctx: 65536 } }, model);
+          assert.equal(requests.at(-1).options.num_ctx, 8192);
+        }
+      }
+    }, { ...metadata, model_info: { 'llama.context_length': 8192 } });
+  }
+
+  await withModelServer(tags, ['local:latest'], async url => {
+    const [model] = await discoverModels(url, [], { maxContextLength: 65536 });
+    assert.equal(model.maxInputTokens + model.maxOutputTokens, 8192);
+  }, { parameters: 'num_ctx 8192', model_info: { 'llama.context_length': 131072 } });
 });
 
 test('accepts configured identifiers and display names, including models absent from tags', async () => {
@@ -1095,11 +1256,11 @@ function trackStreamAborts(t) {
   return aborts;
 }
 
-async function discoverModels(url, models = []) {
+async function discoverModels(url, models = [], configuration = {}) {
   const provider = new OllamaLanguageModelProvider();
   try {
     return await provider.provideLanguageModelChatInformation(
-      { configuration: { url, models } },
+      { configuration: { url, models, ...configuration } },
       cancellationTokenSource().token
     );
   } finally {
@@ -1107,7 +1268,9 @@ async function discoverModels(url, models = []) {
   }
 }
 
-async function withModelServer(models, identifiers, run) {
+async function withModelServer(models, identifiers, run, show = {
+  capabilities: ['tools', 'vision'], model_info: { context_length: 131072 }
+}) {
   const requests = [];
   await withServer(async (request, response) => {
     let result;
@@ -1130,15 +1293,15 @@ async function withModelServer(models, identifiers, run) {
         for await (const chunk of request) {
           body += chunk;
         }
-        const { model } = JSON.parse(body);
-        requests.push({ path: request.url, model });
+        const { model, options } = JSON.parse(body);
+        requests.push({ path: request.url, model, ...(options === undefined ? {} : { options }) });
         if (!identifiers.includes(model)) {
           response.writeHead(400, { 'content-type': 'application/json' });
           response.end(JSON.stringify({ error: 'Model not found' }));
           return;
         }
         result = request.url === '/api/show'
-          ? { capabilities: ['tools', 'vision'], model_info: { context_length: 131072 } }
+          ? show
           : { message: { content: 'Hello' }, done: true };
         break;
       }

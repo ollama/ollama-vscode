@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { Ollama } from 'ollama';
 import { OllamaLanguageModelProvider, createFetch, disposeAll } from './provider';
+import { resolveMaxContextLength } from './modelLimits';
 import {
   inspectOllamaModels,
   ollamaDiagnosticsClientOptions,
@@ -21,7 +22,12 @@ export function activate(context: vscode.ExtensionContext) {
     provider,
     vscode.lm.registerLanguageModelChatProvider(ollamaVendor, provider),
     vscode.commands.registerCommand('ollama.refreshModels', () => provider.refresh()),
-    vscode.commands.registerCommand('ollama.diagnoseModels', () => diagnoseModels(output, provider))
+    vscode.commands.registerCommand('ollama.diagnoseModels', () => diagnoseModels(output, provider)),
+    vscode.workspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration('ollama.maxContextLength')) {
+        provider.refresh();
+      }
+    })
   );
 }
 
@@ -59,9 +65,10 @@ async function inspectDirectOllamaModels(
   const workspaceEndpoint = settings.get<string>('endpoint', defaultOllamaURL) || defaultOllamaURL;
   const selected = provider.selectDiagnosticsConfiguration({
     url: workspaceEndpoint,
-    headers: getConfiguredHeaders(settings)
+    headers: getConfiguredHeaders(settings),
+    maxContextLength: resolveMaxContextLength(undefined, settings.get('maxContextLength'))
   });
-  const { url: endpoint, headers } = selected.configuration;
+  const { url: endpoint, headers, maxContextLength } = selected.configuration;
   output.appendLine(
     `Direct Ollama API is inspecting ${configurationSourceLabel(selected.source)} at ${endpoint}.`
   );
@@ -74,7 +81,7 @@ async function inspectDirectOllamaModels(
   ));
   const timer = setTimeout(() => source.cancel(), 5000);
   try {
-    const inspection = await inspectOllamaModels(ollama);
+    const inspection = await inspectOllamaModels(ollama, maxContextLength);
 
     if (inspection.availableModels !== undefined) {
       const availableModelNames = inspection.availableModels;
