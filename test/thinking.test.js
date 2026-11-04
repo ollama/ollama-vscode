@@ -2,7 +2,11 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  extractThinkingFromModelConfiguration,
+  formatThinkingItemLabel,
+  resolveEffectiveThinking,
   supportedThinkingLevel,
+  thinkingConfigurationSchema,
   thinkingPolicy
 } = require('../out/thinking');
 
@@ -99,4 +103,73 @@ test('accepts only levels supported by the selected model policy', () => {
 test('omits stale configuration for models without a verified policy', () => {
   assert.equal(supportedThinkingLevel(undefined, 'high'), undefined);
   assert.equal(supportedThinkingLevel(undefined, 'invalid'), undefined);
+});
+
+test('builds configuration schema for configurable models with server default and exact levels', () => {
+  const gptOSS = thinkingPolicy('gpt-oss:20b');
+  const schema = thinkingConfigurationSchema(gptOSS);
+  assert.ok(schema);
+  assert.deepEqual(schema.properties.reasoningEffort, {
+    type: ['string', 'boolean'],
+    title: 'Thinking Effort',
+    description: 'Thinking effort for this model.',
+    group: 'navigation',
+    enum: ['default', 'low', 'medium', 'high'],
+    enumItemLabels: ['Use server default', 'Low', 'Medium', 'High'],
+    default: 'default'
+  });
+
+  const deepseek = thinkingPolicy('deepseek-v4-flash:cloud');
+  const deepseekSchema = thinkingConfigurationSchema(deepseek);
+  assert.ok(deepseekSchema);
+  assert.deepEqual(deepseekSchema.properties.reasoningEffort.enum, ['default', false, 'high', 'max']);
+  assert.deepEqual(deepseekSchema.properties.reasoningEffort.enumItemLabels, ['Use server default', 'false', 'High', 'Max']);
+  assert.equal(deepseekSchema.properties.reasoningEffort.default, 'default');
+});
+
+test('configuration schema reflects supported user override as default', () => {
+  const gptOSS = thinkingPolicy('gpt-oss:20b');
+  assert.equal(thinkingConfigurationSchema(gptOSS, 'high').properties.reasoningEffort.default, 'high');
+  assert.equal(thinkingConfigurationSchema(gptOSS, 'unsupported').properties.reasoningEffort.default, 'default');
+
+  const deepseek = thinkingPolicy('deepseek-v4-flash:cloud');
+  assert.equal(thinkingConfigurationSchema(deepseek, false).properties.reasoningEffort.default, false);
+});
+
+test('does not build configuration schema for unverified or single-level models', () => {
+  assert.equal(thinkingConfigurationSchema(undefined), undefined);
+  assert.equal(thinkingConfigurationSchema({ levels: [false], defaultLevel: false }), undefined);
+});
+
+test('extractThinkingFromModelConfiguration extracts effort keys or returns undefined', () => {
+  assert.equal(extractThinkingFromModelConfiguration({ reasoningEffort: 'low' }), 'low');
+  assert.equal(extractThinkingFromModelConfiguration({ thinkingLevel: 'high' }), 'high');
+  assert.equal(extractThinkingFromModelConfiguration({ think: false }), false);
+  assert.equal(extractThinkingFromModelConfiguration(undefined), undefined);
+  assert.equal(extractThinkingFromModelConfiguration(null), undefined);
+  assert.equal(extractThinkingFromModelConfiguration('string'), undefined);
+  assert.equal(extractThinkingFromModelConfiguration([]), undefined);
+});
+
+test('resolveEffectiveThinking handles dropdown, server default, and settings fallback', () => {
+  const gptOSS = thinkingPolicy('gpt-oss:20b');
+
+  // Dropdown selection takes precedence
+  const chosen = resolveEffectiveThinking(gptOSS, { reasoningEffort: 'high' }, 'low');
+  assert.equal(chosen.thinkingLevel, 'high');
+  assert.equal(chosen.persistedSettingValue, 'high');
+
+  // Server default clears override and omits think
+  const defaulted = resolveEffectiveThinking(gptOSS, { reasoningEffort: 'default' }, 'low');
+  assert.equal(defaulted.thinkingLevel, undefined);
+  assert.equal(defaulted.shouldClearPersistedSetting, true);
+
+  // Settings fallback when modelConfiguration is absent
+  const fallback = resolveEffectiveThinking(gptOSS, undefined, 'low');
+  assert.equal(fallback.thinkingLevel, 'low');
+  assert.equal(fallback.persistedSettingValue, undefined);
+
+  // Unsupported dropdown value omits think
+  const invalid = resolveEffectiveThinking(gptOSS, { reasoningEffort: 'none' }, 'low');
+  assert.equal(invalid.thinkingLevel, undefined);
 });

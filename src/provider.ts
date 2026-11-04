@@ -46,8 +46,12 @@ import {
   type ThinkingDiagnosticModel
 } from './diagnostics';
 import {
+  resolveEffectiveThinking,
   supportedThinkingLevel,
+  thinkingConfigurationSchema,
   thinkingPolicy,
+  type LanguageModelConfigurationSchema,
+  type ThinkingLevel,
   type ThinkingPolicy
 } from './thinking';
 import { inferenceTimeoutMilliseconds } from './inferenceTimeout';
@@ -66,6 +70,7 @@ interface OllamaLanguageModel extends vscode.LanguageModelChatInformation {
   thinkingPolicy?: ThinkingPolicy;
   defaultSource?: 'server' | 'compatibility';
   recommendedReplacement?: string;
+  configurationSchema?: LanguageModelConfigurationSchema;
 }
 
 const defaultOllamaURL = 'http://127.0.0.1:11434';
@@ -168,7 +173,17 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   }>();
   readonly onDidChangeLanguageModelChatInformation = this.changeEmitter.event;
 
-  constructor(private readonly output?: vscode.OutputChannel) {}
+  private readonly configSubscription?: vscode.Disposable;
+
+  constructor(private readonly output?: vscode.OutputChannel) {
+    if (typeof vscode.workspace?.onDidChangeConfiguration === 'function') {
+      this.configSubscription = vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('ollama.thinkingLevels')) {
+          this.changeEmitter.fire();
+        }
+      });
+    }
+  }
 
   refresh() {
     this.recoveredContextLengths = new Map();
@@ -178,6 +193,7 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
   }
 
   dispose() {
+    this.configSubscription?.dispose();
     this.recoveredContextLengths = new Map();
     this.resetThinkingDiagnostics();
     this.changeEmitter.dispose();
@@ -311,7 +327,19 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
         && !Array.isArray(thinkingLevels) && Object.hasOwn(thinkingLevels, model.model)
         ? (thinkingLevels as Record<string, unknown>)[model.model]
         : undefined;
-      const thinkingLevel = supportedThinkingLevel(model.thinkingPolicy, rawThinkingLevel);
+      const modelConfig = (options as { modelConfiguration?: unknown })?.modelConfiguration;
+      const thinkingResolution = resolveEffectiveThinking(
+        model.thinkingPolicy,
+        modelConfig,
+        rawThinkingLevel
+      );
+      const thinkingLevel = thinkingResolution.thinkingLevel;
+
+      if (thinkingResolution.persistedSettingValue !== undefined) {
+        await this.syncThinkingLevelSetting(model.model, thinkingResolution.persistedSettingValue);
+      } else if (thinkingResolution.shouldClearPersistedSetting) {
+        await this.syncThinkingLevelSetting(model.model, undefined);
+      }
 
       const totalContextWindow = (model.maxInputTokens ?? fallbackContextWindow)
         + (model.maxOutputTokens ?? defaultMaxOutputTokens);
@@ -489,6 +517,29 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
     return this.tokenCounts.count(model.id, input);
   }
 
+  private async syncThinkingLevelSetting(modelName: string, level: ThinkingLevel | undefined): Promise<void> {
+    try {
+      const config = vscode.workspace.getConfiguration('ollama');
+      if (typeof config?.update !== 'function') {
+        return;
+      }
+      const current = config.get<unknown>('thinkingLevels');
+      const map = current && typeof current === 'object' && !Array.isArray(current)
+        ? { ...(current as Record<string, unknown>) }
+        : {};
+      if (level === undefined) {
+        if (Object.hasOwn(map, modelName)) {
+          delete map[modelName];
+          await config.update('thinkingLevels', map, vscode.ConfigurationTarget.Global);
+        }
+      } else if (map[modelName] !== level) {
+        map[modelName] = level;
+        await config.update('thinkingLevels', map, vscode.ConfigurationTarget.Global);
+      }
+    } catch {
+      // Ignore setting persistence errors (e.g. read-only settings or test mocks)
+    }
+  }
   private async handleChatError(model: OllamaLanguageModel, error: unknown): Promise<Error> {
     this.output?.appendLine(`Ollama request failed for ${model.model}: ${formatError(error)}`);
 
@@ -674,6 +725,15 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       : undefined;
     const { maxInputTokens, maxOutputTokens } = modelTokenLimits(model, show);
 
+    const thinkingLevels = vscode.workspace.getConfiguration('ollama').get<unknown>('thinkingLevels');
+    const configuredThinkingOverride = thinkingLevels && typeof thinkingLevels === 'object'
+      && !Array.isArray(thinkingLevels) && Object.hasOwn(thinkingLevels, id)
+      ? (thinkingLevels as Record<string, unknown>)[id]
+      : undefined;
+    const configurationSchema = policy
+      ? thinkingConfigurationSchema(policy, configuredThinkingOverride)
+      : undefined;
+
     return {
       id,
       name,
@@ -692,7 +752,8 @@ export class OllamaLanguageModelProvider implements vscode.LanguageModelChatProv
       local: !isRemoteModel(model) && !isCloudModel(id),
       thinkingPolicy: policy,
       defaultSource,
-      recommendedReplacement: replacement
+      recommendedReplacement: replacement,
+      configurationSchema
     };
   }
 }

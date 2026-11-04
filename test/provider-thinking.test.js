@@ -7,9 +7,19 @@ class Disposable {
 }
 
 class EventEmitter {
-  event = () => new Disposable();
-  fire() {}
-  dispose() {}
+  listeners = [];
+  event = (listener) => {
+    this.listeners.push(listener);
+    return new Disposable();
+  };
+  fire(data) {
+    for (const listener of this.listeners) {
+      listener(data);
+    }
+  }
+  dispose() {
+    this.listeners = [];
+  }
 }
 
 class CancellationTokenSource {
@@ -42,6 +52,7 @@ const cancellationToken = {
 const vscode = {
   CancellationError: class CancellationError extends Error {},
   CancellationTokenSource,
+  ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 },
   EventEmitter,
   LanguageModelChatMessageRole: { User: 1, Assistant: 2, System: 3 },
   LanguageModelDataPart,
@@ -55,7 +66,14 @@ const vscode = {
     showWarningMessage: async () => undefined
   },
   workspace: {
-    getConfiguration: () => ({ get: (key, fallback) => key in settings ? settings[key] : fallback })
+    getConfiguration: () => ({
+      get: (key, fallback) => key in settings ? settings[key] : fallback,
+      update: async (key, value) => { settings[key] = value; }
+    }),
+    onDidChangeConfiguration: (listener) => {
+      configListeners.push(listener);
+      return new Disposable();
+    }
   }
 };
 
@@ -105,10 +123,13 @@ try {
   Module._load = originalLoad;
 }
 
+let configListeners = [];
+
 test.beforeEach(() => {
   models = [];
   chatRequests = [];
   settings = {};
+  configListeners = [];
 });
 
 test('leaves the server default unchanged when no effort setting is present', async () => {
@@ -371,4 +392,107 @@ test('keeps models with missing or non-configurable metadata visible while omitt
   } finally {
     provider.dispose();
   }
+});
+
+test('attaches model-aware configurationSchema to models with thinking policy, omitting it for non-thinking models', async () => {
+  models = [
+    { name: 'gpt-oss:20b', capabilities: ['thinking'], remote_host: 'ollama.com' },
+    { name: 'phi3:latest', remote_host: 'ollama.com' }
+  ];
+  const provider = new OllamaLanguageModelProvider();
+  try {
+    const discovered = await provider.provideLanguageModelChatInformation({}, cancellationToken);
+    const gptOSS = discovered.find(m => m.model === 'gpt-oss:20b');
+    const phi3 = discovered.find(m => m.model === 'phi3:latest');
+
+    assert.ok(gptOSS.configurationSchema);
+    assert.deepEqual(gptOSS.configurationSchema.properties.reasoningEffort.enum, ['default', 'low', 'medium', 'high']);
+    assert.deepEqual(gptOSS.configurationSchema.properties.reasoningEffort.enumItemLabels, ['Use server default', 'Low', 'Medium', 'High']);
+    assert.equal(gptOSS.configurationSchema.properties.reasoningEffort.default, 'default');
+
+    assert.equal(phi3.configurationSchema, undefined);
+  } finally {
+    provider.dispose();
+  }
+});
+
+test('reads thinking effort from modelConfiguration on chat request and persists choice to settings', async () => {
+  models = [{ name: 'gpt-oss:20b', capabilities: ['thinking'], remote_host: 'ollama.com' }];
+  const provider = new OllamaLanguageModelProvider();
+  try {
+    const [model] = await provider.provideLanguageModelChatInformation({}, cancellationToken);
+
+    await provider.provideLanguageModelChatResponse(
+      model,
+      [],
+      { modelConfiguration: { reasoningEffort: 'high' } },
+      { report() {} },
+      cancellationToken
+    );
+
+    assert.equal(chatRequests.length, 1);
+    assert.equal(chatRequests[0].think, 'high');
+    assert.equal(settings.thinkingLevels['gpt-oss:20b'], 'high');
+  } finally {
+    provider.dispose();
+  }
+});
+
+test('supports boolean thinking levels from modelConfiguration and persists choice', async () => {
+  models = [{ name: 'deepseek-v4-flash:cloud', capabilities: ['thinking'], remote_host: 'ollama.com' }];
+  const provider = new OllamaLanguageModelProvider();
+  try {
+    const [model] = await provider.provideLanguageModelChatInformation({}, cancellationToken);
+
+    await provider.provideLanguageModelChatResponse(
+      model,
+      [],
+      { modelConfiguration: { reasoningEffort: false } },
+      { report() {} },
+      cancellationToken
+    );
+
+    assert.equal(chatRequests.length, 1);
+    assert.equal(chatRequests[0].think, false);
+    assert.equal(settings.thinkingLevels['deepseek-v4-flash:cloud'], false);
+  } finally {
+    provider.dispose();
+  }
+});
+
+test('server default selection in modelConfiguration removes the override and omits think', async () => {
+  models = [{ name: 'gpt-oss:20b', capabilities: ['thinking'], remote_host: 'ollama.com' }];
+  settings.thinkingLevels = { 'gpt-oss:20b': 'high' };
+  const provider = new OllamaLanguageModelProvider();
+  try {
+    const [model] = await provider.provideLanguageModelChatInformation({}, cancellationToken);
+
+    await provider.provideLanguageModelChatResponse(
+      model,
+      [],
+      { modelConfiguration: { reasoningEffort: 'default' } },
+      { report() {} },
+      cancellationToken
+    );
+
+    assert.equal(chatRequests.length, 1);
+    assert.equal(chatRequests[0].think, undefined);
+    assert.equal('gpt-oss:20b' in settings.thinkingLevels, false);
+  } finally {
+    provider.dispose();
+  }
+});
+
+test('re-fires onDidChangeLanguageModelChatInformation when ollama.thinkingLevels setting changes', async () => {
+  const provider = new OllamaLanguageModelProvider();
+  let changeFired = false;
+  provider.onDidChangeLanguageModelChatInformation(() => {
+    changeFired = true;
+  });
+
+  for (const listener of configListeners) {
+    listener({ affectsConfiguration: (section) => section === 'ollama.thinkingLevels' });
+  }
+  assert.equal(changeFired, true);
+  provider.dispose();
 });
